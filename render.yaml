@@ -1,0 +1,11 @@
+# Render.com Blueprint: richtet den Relay-Server gratis ein.
+services:
+  - type: web
+    name: klassen-status-relay
+    runtime: node
+    plan: free
+    rootDir: relay
+    buildCommand: npm install --omit=dev
+    startCommand: node relay.js
+    healthCheckPath: /
+    autoDeploy: true

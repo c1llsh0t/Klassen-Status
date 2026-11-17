@@ -19,6 +19,7 @@ from unittest import mock
 import klassenzimmer as K
 
 K.ACK_TIMEOUT = 0.3
+KEY = K.derive_key("K7QM3X")
 
 
 # ---------------------------------------------------------------------------
@@ -32,7 +33,7 @@ class DropNetwork(K.Network):
         self.drop = dict(drop or {})
 
     def _handle(self, data, addr):
-        msg = K.decode(data)
+        msg = K.decode(data, self.key)
         if msg and self.drop.get(msg["type"], 0) > 0:
             self.drop[msg["type"]] -= 1
             return
@@ -73,29 +74,51 @@ def find_peer(q, name, seconds=3):
 class ProtocolTest(unittest.TestCase):
     def me(self):
         return {"peer_id": K.new_id(), "name": "Lena", "role": "student",
-                "status": "online", "klasse": "INF3a", "port": 1234}
+                "status": "online", "klasse": "", "port": 1234}
 
     def test_gueltige_nachrichten(self):
         me = self.me()
         for msg in (K.make_heartbeat(me), K.make_bye(me), K.make_help(me, "Hallo"),
                     K.make_help(me, ""), K.make_done(me, K.new_id()), K.make_ack(me, K.new_id())):
-            self.assertEqual(K.decode(K.encode(msg)), msg)
+            got = K.decode(K.encode(msg, KEY), KEY)
+            got.pop("mac")
+            self.assertEqual(got, msg)
 
     def test_kaputte_nachrichten_werden_ignoriert(self):
         hb = K.make_heartbeat(self.me())
         bad = [b"", b"kein json", b"[1,2]", b"null", b'{"type":"help"}', b"x" * 5000, b"\xff\xfe"]
         for change in ({"role": "chef"}, {"status": "weg"}, {"port": "80"}, {"port": True},
-                       {"port": 0}, {"name": ""}, {"name": "x" * 31}, {"class": ""},
-                       {"id": ""}, {"from": 5}, {"type": "hack"}):
-            bad.append(K.encode({**hb, **change}))
+                       {"port": 0}, {"name": ""}, {"name": "x" * 31}, {"class": "x" * 21},
+                       {"id": ""}, {"from": 5}, {"type": "hack"}, {"ts": "jetzt"}):
+            bad.append(K.encode({**hb, **change}, KEY))   # richtig signiert, aber Unsinn
         for data in bad:
-            self.assertIsNone(K.decode(data), data[:60])
+            self.assertIsNone(K.decode(data, KEY), data[:60])
+
+    def test_falscher_code_und_faelschung(self):
+        hb = K.make_heartbeat(self.me())
+        self.assertIsNone(K.decode(K.encode(hb, K.derive_key("ABCDEF")), KEY))  # anderer Code
+        import json
+        forged = json.loads(K.encode(hb, KEY))
+        forged["role"] = "coach"                                              # verändert
+        self.assertIsNone(K.decode(json.dumps(forged).encode(), KEY))
+        unsigned = json.dumps(hb).encode()                                    # ohne Signatur
+        self.assertIsNone(K.decode(unsigned, KEY))
+
+    def test_alte_nachricht_wird_ignoriert(self):
+        hb = {**K.make_heartbeat(self.me()), "ts": int(time.time()) - K.TS_WINDOW - 5}
+        self.assertIsNone(K.decode(K.encode(hb, KEY), KEY))
+
+    def test_code_eingabe(self):
+        c = K.new_code()
+        self.assertEqual(len(c), 6)
+        self.assertEqual(K.clean_code(K.format_code(c).lower()), c)
+        self.assertEqual(K.clean_code(" k7q m3x "), "K7QM3X")
+        for bad in ("", "K7QM3", "K7QM3XX", "K0QM3X", "KIQM3X", "K7QM3!"):
+            self.assertIsNone(K.clean_code(bad), bad)
 
     def test_ids_sind_eindeutig(self):
         self.assertEqual(len({K.new_id() for _ in range(10000)}), 10000)
 
-    def test_klassenname_vergleich(self):
-        self.assertEqual(K.class_key("  INF  3a "), K.class_key("inf 3A"))
 
 
 # ---------------------------------------------------------------------------
@@ -110,10 +133,10 @@ class NetworkTest(unittest.TestCase):
             n.stop()
         time.sleep(0.2)
 
-    def make(self, name, role, klasse="INF3a", **kw):
-        me = {"peer_id": K.new_id(), "name": name, "role": role, "status": "online", "klasse": klasse}
+    def make(self, name, role, code="K7QM3X", **kw):
+        me = {"peer_id": K.new_id(), "name": name, "role": role, "status": "online", "klasse": ""}
         q = queue.Queue()
-        n = DropNetwork(me, q, **kw)
+        n = DropNetwork(me, q, KEY if code == "K7QM3X" else K.derive_key(code), **kw)
         n.start()
         self.nodes.append((n, q))
         return n, q
@@ -123,9 +146,9 @@ class NetworkTest(unittest.TestCase):
         names = {e[1]["name"] for e in collect(qa, 1) if e[0] == "peer"}
         self.assertEqual(names, {"Tim", "Coach"})
 
-    def test_andere_klasse_ist_unsichtbar(self):
-        (a, qa), _ = self.make("Lena", "student", "INF3a"), self.make("Fremd", "student", "INF3b")
-        _, _ = self.make("Tim", "student", "inf3A")   # gleiche Klasse, andere Schreibweise
+    def test_anderer_code_ist_unsichtbar(self):
+        (a, qa), _ = self.make("Lena", "student"), self.make("Fremd", "student", "ABCDEF")
+        _, _ = self.make("Tim", "student")
         names = {e[1]["name"] for e in collect(qa, 1) if e[0] == "peer"}
         self.assertEqual(names, {"Tim"})
 
@@ -196,8 +219,8 @@ class NetworkTest(unittest.TestCase):
 
     def test_bye_beim_beenden(self):
         a, qa = self.make("Lena", "student")
-        me = {"peer_id": K.new_id(), "name": "Tim", "role": "student", "status": "online", "klasse": "INF3a"}
-        b = K.Network(me, queue.Queue())
+        me = {"peer_id": K.new_id(), "name": "Tim", "role": "student", "status": "online", "klasse": ""}
+        b = K.Network(me, queue.Queue(), KEY)
         b.start()
         find_peer(qa, "Tim")
         b.stop()
@@ -226,17 +249,18 @@ class StoreAndAutostartTest(unittest.TestCase):
 
     def test_klasse_wird_gespeichert(self):
         s = K.Store()
-        s.set_profile("Lena", "student", "INF3a")
+        s.set_profile("Lena", "student", "K7QM3X")
         pid = s.get("peer_id")
-        s.remember("INF3a", "a" * 32, "Tim", "student")
-        s.remember("INF3b", "b" * 32, "Fremd", "student")
+        room = K.room_id(KEY)
+        s.remember(room, "a" * 32, "Tim", "student")
+        s.remember("anderer", "b" * 32, "Fremd", "student")
         # "Nächster Morgen": neu laden
         s2 = K.Store()
         self.assertEqual(s2.get("peer_id"), pid)            # feste ID
-        self.assertEqual(s2.get("klasse"), "INF3a")
-        self.assertEqual(list(s2.known("inf3a").values()), [{"name": "Tim", "role": "student"}])
-        s2.forget("INF3a", "a" * 32)
-        self.assertEqual(K.Store().known("INF3a"), {})
+        self.assertEqual(s2.get("code"), "K7QM3X")
+        self.assertEqual(list(s2.known(room).values()), [{"name": "Tim", "role": "student"}])
+        s2.forget(room, "a" * 32)
+        self.assertEqual(K.Store().known(room), {})
 
     def test_kaputte_datei(self):
         K.config_dir().mkdir(parents=True)
@@ -260,6 +284,67 @@ class StoreAndAutostartTest(unittest.TestCase):
     def test_pfad_mit_leerzeichen(self):
         line = K.linux_desktop(["/home/lena/Meine Apps/Klassenzimmer", "--autostart"])
         self.assertIn('Exec="/home/lena/Meine Apps/Klassenzimmer" --autostart', line)
+
+
+# ---------------------------------------------------------------------------
+# Steuerung und Waybar
+# ---------------------------------------------------------------------------
+OMARCHY_LIKE = '''// Waybar
+{
+  "reload_style_on_change": true,
+  "layer": "top",
+  "modules-left": ["custom/omarchy", "hyprland/workspaces"],
+  "modules-right": [
+    "group/tray-expander",
+    "bluetooth",
+    "battery"
+  ],
+  /* Kommentar mit { Klammer */
+  "battery": {"format": "{capacity}%"}
+}
+'''
+
+
+def strip_jsonc(text):
+    import re
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+    return "\n".join(l for l in text.splitlines() if not l.strip().startswith("//"))
+
+
+class WaybarAndControlTest(unittest.TestCase):
+    def test_waybar_modul_einfuegen(self):
+        import json
+        cmd = ["/home/lena/.local/bin/klassenzimmer"]
+        new = K.insert_waybar_module(OMARCHY_LIKE, cmd)
+        data = json.loads(strip_jsonc(new))                  # bleibt gültig
+        self.assertEqual(data["modules-right"][0], "custom/klassenzimmer")
+        mod = data["custom/klassenzimmer"]
+        self.assertEqual(mod["return-type"], "json")
+        self.assertTrue(mod["on-click"].endswith("--zeigen"))
+        self.assertEqual(data["battery"], {"format": "{capacity}%"})   # Rest unverändert
+        self.assertEqual(K.insert_waybar_module(new, cmd), new)        # nicht doppelt
+
+    def test_waybar_mehrere_leisten(self):
+        with self.assertRaises(ValueError):
+            K.insert_waybar_module('[{"modules-right": []}]', ["x"])
+
+    def test_steuerung(self):
+        c = K.Control()
+        if not c.acquire():
+            self.skipTest("Steuer-Port belegt (läuft die App gerade?)")
+        try:
+            self.assertFalse(K.Control().acquire())          # zweiter Start: besetzt
+            q = queue.Queue()
+            c.start(q)
+            self.assertTrue(K.send_control("toggle"))
+            self.assertEqual(q.get(timeout=2), ("control", "toggle"))
+            self.assertFalse(K.send_control("rm -rf"))       # unbekannt -> ignoriert
+        finally:
+            c.close()
+        # Sofort wieder starten muss gehen (kein "Port belegt" nach dem Beenden)
+        c2 = K.Control()
+        self.assertTrue(c2.acquire())
+        c2.close()
 
 
 if __name__ == "__main__":

@@ -4,8 +4,8 @@ Eine Peer-to-Peer-App: Alle Rechner im selben WLAN/LAN sehen sich gegenseitig. E
 
 ```
 python3 klassenzimmer.py                                        # Startfenster
-python3 klassenzimmer.py --name Lena --role student --klasse INF3a
-python3 klassenzimmer.py --name "Herr Keller" --role coach --klasse INF3a
+python3 klassenzimmer.py --name Lena --role student --code K7QM3X
+python3 klassenzimmer.py --name "Herr Keller" --role coach --code K7QM3X --klasse INF3a
 python3 -m unittest -v test_klassenzimmer                      # automatische Tests
 ```
 
@@ -15,16 +15,17 @@ Zum Ausprobieren kannst du die App mehrmals auf **einem** Rechner starten, in me
 
 ## Überblick: Wer macht was?
 
-Der ganze Code steht in **einer Datei**, `klassenzimmer.py`, aufgeteilt in 6 Teile:
+Der ganze Code steht in **einer Datei**, `klassenzimmer.py`, aufgeteilt in 7 Teile:
 
 | Teil in `klassenzimmer.py` | Aufgabe | Schritt unten |
 |---|---|---|
-| TEIL 1 Einstellungen und Protokoll | Wie sehen Nachrichten aus? Prüfen von Nachrichten | 1 |
-| TEIL 2 Speicher | Name, Klasse, feste ID, bekannte Teilnehmer speichern | 5 |
+| TEIL 1 Protokoll und Beitrittscode | Wie sehen Nachrichten aus? Signieren und Prüfen | 1 |
+| TEIL 2 Speicher | Name, Code, feste ID, bekannte Teilnehmer speichern | 5 |
 | TEIL 3 Autostart | beim Anmelden starten | 5 |
-| TEIL 4 Netzwerk | Senden und Empfangen, Heartbeat, ACK und Wiederholung | 2 + 3 |
-| TEIL 5 Oberfläche | Fenster, Liste, Knöpfe | 4 |
-| TEIL 6 Start | Kommandozeile, Startfenster, alles verbinden | 5 |
+| TEIL 4 Steuerung und Waybar | „nur einmal starten“, Befehle, Waybar-Modul | 5 |
+| TEIL 5 Netzwerk | Senden und Empfangen, Heartbeat, ACK und Wiederholung | 2 + 3 |
+| TEIL 6 Oberfläche | grosses Fenster und kleine Leiste | 4 |
+| TEIL 7 Start | Kommandozeile, Startfenster, alles verbinden | 5 |
 
 Dazu kommt `test_klassenzimmer.py` mit den automatischen Tests (Schritt 6).
 
@@ -46,7 +47,7 @@ So hängen die Teile zusammen:
 Zwei Programme können nur miteinander reden, wenn sie dieselbe „Sprache“ sprechen. Bei uns ist jede Nachricht **JSON**:
 
 ```json
-{"type": "heartbeat", "id": "3f2a…", "from": "a91c…", "name": "Lena",
+{"type": "heartbeat", "id": "3f2a…", "from": "a91c…", "ts": 1763380000, "name": "Lena",
  "role": "student", "status": "online", "class": "INF3a", "port": 51234}
 ```
 
@@ -68,11 +69,21 @@ Die Nachrichtentypen:
 
 **Warum `decode()` so viel prüft:** Alles, was übers Netzwerk kommt, kann kaputt sein, oder jemand schickt absichtlich Unsinn. `decode()` gibt dann `None` zurück, statt dass die App abstürzt. Merksatz: **Daten von aussen nie blind vertrauen.**
 
+### Beitrittscode und Signatur
+
+Jede Nachricht bekommt zusätzlich `ts` (Zeitpunkt) und `mac` (Signatur). Der Ablauf:
+
+1. Der Coach erzeugt mit `new_code()` einen Code wie `K7QM3X`. Dafür nimmt die App `secrets` statt `random`, denn das ist sicherer Zufall.
+2. `derive_key(code)` macht daraus mit **PBKDF2** einen Schlüssel. 200 000 Runden machen das absichtlich langsam, damit niemand mitgeschnittene Nachrichten nimmt und den Code durchprobiert.
+3. `encode()` hängt `mac = HMAC-SHA256(Schlüssel, Nachricht)` an.
+4. `decode()` rechnet die Signatur nach und vergleicht sie mit `hmac.compare_digest` (das ist sicher gegen Zeitmessungs-Tricks). Passt sie nicht, war es eine andere Klasse oder eine Fälschung, und die Nachricht wird weggeworfen.
+5. Ist `ts` mehr als 10 Minuten von der eigenen Uhr entfernt, wird die Nachricht auch weggeworfen. So kann niemand eine gestern aufgezeichnete Nachricht nochmal abspielen.
+
 Ebenfalls in dieser Datei: `time.monotonic()` statt `time.time()`. Diese Uhr läuft immer nur vorwärts. Stellt jemand die Systemuhr um, funktionieren unsere Timeouts trotzdem.
 
 ---
 
-## Schritt 2: Finden und Status per Broadcast (TEIL 4)
+## Schritt 2: Finden und Status per Broadcast (TEIL 5)
 
 ### UDP und Broadcast
 
@@ -94,10 +105,10 @@ self.usock.bind(("", 0))       # Port 0 = Betriebssystem sucht einen freien Port
 
 - Alle **5 Sekunden** schickt jede App einen `heartbeat` per Broadcast (`_timer_loop`).
 - Die GUI merkt sich bei jedem Teilnehmer `last_seen`, also wann er sich zuletzt gemeldet hat.
-- Ist das länger als **20 Sekunden** her, wird der Punkt **grau** (`_shown_status` in TEIL 5). 20 Sekunden heisst: Vier Heartbeats hintereinander müssen fehlen. Ein paar verlorene Pakete oder ein kurz hängendes WLAN machen also niemanden grau. Ändern kann man das bei `OFFLINE_AFTER` in TEIL 1.
+- Ist das länger als **20 Sekunden** her, wird der Punkt **grau** (`_shown_status` in TEIL 6). 20 Sekunden heisst: Vier Heartbeats hintereinander müssen fehlen. Ein paar verlorene Pakete oder ein kurz hängendes WLAN machen also niemanden grau. Ändern kann man das bei `OFFLINE_AFTER` in TEIL 1.
 - Beim Beenden schickt die App `bye`. Dann wird man sofort grau und nicht erst nach 20 Sekunden.
 
-**Nur die eigene Klasse:** Jeder Heartbeat enthält den Klassennamen. Gehört er zu einer anderen Klasse, wird er ignoriert. So können mehrere Klassen im selben WLAN sein, ohne sich zu stören. Gross-/Kleinschreibung und Leerzeichen sind dabei egal („INF3a“ = „inf 3A“).
+**Nur die eigene Klasse:** Nachrichten mit einem anderen Beitrittscode haben eine falsche Signatur und werden schon in `decode()` aussortiert. So können mehrere Klassen im selben WLAN sein, ohne sich zu stören.
 
 **Trick für schnelles Finden:** Höre ich von einem Teilnehmer, den ich noch nicht kenne, schicke ich ihm **sofort** direkt meinen eigenen Heartbeat. Sonst müsste eine neu gestartete App bis zu 5 Sekunden warten, bis sie die anderen sieht.
 
@@ -154,7 +165,7 @@ Im Netzwerk-Teil laufen **drei Threads gleichzeitig**: zwei warten auf Pakete (j
 
 ---
 
-## Schritt 4: Die Oberfläche (TEIL 5)
+## Schritt 4: Die Oberfläche (TEIL 6)
 
 ### Die goldene Regel
 
@@ -186,28 +197,41 @@ Die GUI speichert alles, was sie anzeigen muss:
 
 Auf dem Mac ignoriert tkinter die Farben von `tk.Button`. Weisse Schrift auf einem weissen Knopf wäre unlesbar. Darum gibt es `ColorButton`: ein `tk.Label`, das auf Klicks reagiert und überall gleich aussieht.
 
+### Kleine Leiste und Waybar
+
+Die App hat drei Ansichten (`view`):
+- **`mini`** (Windows, Mac, Linux): Die Klasse `MiniBar` ist ein kleines `Toplevel`-Fenster ohne Rahmen (`overrideredirect(True)`), das immer im Vordergrund liegt (`-topmost`). Das grosse Fenster wird mit `withdraw()` versteckt und mit `deiconify()` wieder gezeigt.
+- **`waybar`** (Omarchy/Hyprland, erkannt an `HYPRLAND_INSTANCE_SIGNATURE`): Statt einer Leiste schreibt `_update_small_views()` den Zustand als fertiges Waybar-JSON in `~/.cache/klassenzimmer/waybar.json`. Die Waybar liest die Datei alle 2 Sekunden mit `cat`. Der farbige Punkt ist Pango-Markup: `<span color='#2e9e44'>●</span>`.
+- **`fenster`** (Testmodus): nur das grosse Fenster, wie bisher.
+
+Das Fenster-X ruft `close_window()` auf. Im Testmodus beendet es die App, sonst wird das Fenster nur versteckt.
+
 ### Neu zeichnen
 
 `_render_peers()` löscht alle Zeilen und baut sie neu auf. Das ist nicht das Effizienteste, aber einfach zu verstehen und für eine Klasse schnell genug. `_tick()` zeichnet zusätzlich jede Sekunde neu, damit Leute grau werden, auch wenn gerade keine Nachricht kommt.
 
 ---
 
-## Schritt 5: Start, Speichern und Autostart (TEIL 2, 3 und 6)
+## Schritt 5: Start, Speichern, Autostart und Steuerung (TEIL 2, 3, 4 und 7)
 
 **Zwei Arten zu starten:**
-- **Normal** (ohne `--name`): Das Startfenster fragt Name, Klasse und Rolle ab. Alles wird gespeichert, auch eine **feste ID** (`peer_id`), die bei jedem Start gleich bleibt.
+- **Normal** (ohne `--name`): Das Startfenster fragt Name, Rolle und Beitrittscode ab, beim Coach auch den Klassennamen. Alles wird gespeichert, auch eine **feste ID** (`peer_id`), die bei jedem Start gleich bleibt.
 - **Testmodus** (`--name … --role …`): Es wird nichts gespeichert, und man kann mehrere Apps auf einem PC starten.
 
-**Klasse speichern (`Store`):** In der Einstellungsdatei steht pro Klasse jeder Teilnehmer, den man schon einmal gesehen hat (feste ID, Name, Rolle). Beim Start erscheinen alle sofort **grau** in der Liste und werden grün, sobald sie sich melden. Wer nicht mehr in die Klasse gehört, wird mit dem **✕** neben einem grauen Namen entfernt. Gespeichert wird zuerst in eine `.tmp`-Datei und erst dann umbenannt (`os.replace`). So ist die Datei nie halb geschrieben, auch wenn der PC abstürzt.
+**Klasse speichern (`Store`):** In der Einstellungsdatei steht pro Klasse (`room_id`, aus dem Code abgeleitet) jeder Teilnehmer, den man schon einmal gesehen hat (feste ID, Name, Rolle). Beim Start erscheinen alle sofort **grau** in der Liste und werden grün, sobald sie sich melden. Wer nicht mehr in die Klasse gehört, wird mit dem **✕** neben einem grauen Namen entfernt. Gespeichert wird zuerst in eine `.tmp`-Datei und erst dann umbenannt (`os.replace`). So ist die Datei nie halb geschrieben, auch wenn der PC abstürzt.
 
-**Nur einmal starten:** Normal gestartet belegt die App den TCP-Port 50505 auf `127.0.0.1`. Ein zweiter Start (z.B. Autostart plus von Hand) merkt, dass der Port belegt ist, und meldet „Die App läuft schon“.
+**Nur einmal starten und Befehle (`Control`):** Normal gestartet belegt die App den TCP-Port 50507 auf `127.0.0.1`, also nur auf diesem Computer. Ein zweiter Start merkt, dass der Port belegt ist, schickt der laufenden App über diesen Port den Befehl `show` (Fenster zeigen) und beendet sich. Genauso funktionieren `--zeigen`, `--status-umschalten` und `--beenden`, die die Waybar bei einem Klick aufruft. Angenommen werden nur diese vier Befehle, alles andere wird ignoriert.
+
+Ein Detail: Unter Linux und Mac setzt die App `SO_REUSEADDR`. Sonst hält das System den Port nach dem Beenden noch etwa eine Minute fest (`TIME_WAIT`), und ein schneller Neustart würde scheitern. Unter Windows verhindert `SO_EXCLUSIVEADDRUSE`, dass ein anderes Programm den Port „mitbenutzt“.
+
+**Waybar einrichten (`setup_waybar`):** Die Funktion sucht `~/.config/waybar/config.jsonc`, legt eine Sicherung an und fügt mit `insert_waybar_module()` zwei Dinge ein: `"custom/klassenzimmer"` ganz vorne in `modules-right` und die Modul-Einstellungen direkt nach der ersten `{`. Die Datei ist JSONC, also JSON mit Kommentaren. Darum wird nicht `json.load` benutzt, sondern gezielt Text eingefügt. Danach lädt `omarchy-restart-waybar` die Waybar neu.
 
 **Autostart:** Je nach System ein Registry-Eintrag (Windows), eine `.plist` in `~/Library/LaunchAgents` (Mac) oder eine `.desktop`-Datei in `~/.config/autostart` (Linux). Der gespeicherte Befehl enthält `--autostart`. Damit startet die App ohne Startfenster.
 
 **Ablauf in `main()`:**
 1. `argparse` liest die Optionen.
 2. Normal: Sperre prüfen, Einstellungen laden, eventuell Startfenster zeigen und speichern.
-3. Das `me`-dict beschreibt diese App: `peer_id`, Name, Rolle, Klasse, Status.
+3. Das `me`-dict beschreibt diese App: `peer_id`, Name, Rolle, Klassenname, Status. Aus dem Code wird der Schlüssel (`derive_key`).
 4. `Network` wird gestartet, dann die Oberfläche. Beide teilen sich die `events`-Queue.
 5. Schliesst man das Fenster, schickt `quit()` zweimal `bye` und schliesst die Sockets.
 
@@ -219,10 +243,12 @@ Auf dem Mac ignoriert tkinter die Farben von `tk.Button`. Weisse Schrift auf ein
 python3 -m unittest -v test_klassenzimmer
 ```
 
-Die 19 Tests starten mehrere „Teilnehmer“ in einem Programm und prüfen:
+Die Tests starten mehrere „Teilnehmer“ in einem Programm und prüfen:
 
 - alle finden sich, und eine neue App sieht die anderen in unter 1 Sekunde
-- eine andere Klasse ist unsichtbar
+- ein anderer Beitrittscode ist unsichtbar, gefälschte, unsignierte und alte Nachrichten werden verworfen
+- das Waybar-Modul wird richtig eingefügt (und nicht doppelt)
+- die Steuerung („läuft schon“, Befehle) funktioniert
 - die Klasse wird gespeichert und am „nächsten Tag“ wieder geladen
 - der Autostart lässt sich ein- und ausschalten
 - ein Statuswechsel kommt sofort an
@@ -238,8 +264,8 @@ Der Trick dabei: `DropNetwork` ist eine Unterklasse von `Network`, die absichtli
 ### Selber ausprobieren mit Paketverlust
 
 ```
-python3 klassenzimmer.py --name Coach --role coach --verlust 0.5
-python3 klassenzimmer.py --name Lena --role student
+python3 klassenzimmer.py --name Coach --role coach --code K7QM3X --verlust 0.5
+python3 klassenzimmer.py --name Lena --role student --code K7QM3X
 ```
 
 Der Coach „verliert“ jetzt die Hälfte aller Pakete. Bei Lena siehst du „Versuch 2/5“ oder „Versuch 3/5“ und am Ende trotzdem „✓ angekommen“.
@@ -255,9 +281,14 @@ Der Coach „verliert“ jetzt die Hälfte aller Pakete. Bei Lena siehst du „V
 
 ## Sicherheit: Was diese App (bewusst) nicht kann
 
-Alles läuft **unverschlüsselt** und **ohne Anmeldung**. Jeder im selben Netz kann mitlesen und sich als jemand anderes ausgeben, auch als Coach. Für ein Klassenzimmer ist das meistens in Ordnung. Schreib aber keine privaten Dinge in die Hilfeanfrage.
+Die Nachrichten sind **signiert, aber nicht verschlüsselt**:
+- Wer den Beitrittscode **nicht** kennt, kann nichts fälschen und nicht mitmachen.
+- Wer im selben WLAN mithört, kann trotzdem **mitlesen** (Namen, Fragen).
+- Wer den Code **kennt**, also jeder in der Klasse, könnte sich theoretisch als jemand anderes ausgeben.
 
-Was die App trotzdem schützt:
+Für ein Klassenzimmer ist das in Ordnung. Schreib aber keine privaten Dinge in die Hilfeanfrage.
+
+Was die App sonst noch schützt:
 
 - kaputte oder zu grosse Pakete werden ignoriert
 - Namen und Texte haben eine Maximallänge
@@ -268,8 +299,8 @@ Was die App trotzdem schützt:
 ## Übungen zum Weitermachen
 
 1. **Leicht:** Ändere `HEARTBEAT_INTERVAL` auf 2 Sekunden und `OFFLINE_AFTER` auf 5. Was passiert, wenn du eine App mit dem Task-Manager hart beendest (dann kommt kein `bye`)?
-2. **Leicht:** Füge einen dritten Status „Pause“ (blau) hinzu. Du musst ihn in TEIL 1 (`STATUSES`) und in TEIL 5 (`COLORS`, `STATUS_TEXT`, `toggle_status`) eintragen.
+2. **Leicht:** Füge einen dritten Status „Pause“ (blau) hinzu. Du musst ihn in TEIL 1 (`STATUSES`) und in TEIL 6 (`COLORS`, `STATUS_TEXT`, `toggle_status`) eintragen.
 3. **Mittel:** Der Coach soll sehen, **wie lange** jemand schon wartet („seit 3 min“). Tipp: Speichere beim Empfang `time.monotonic()` und rechne in `_tick` neu.
 4. **Mittel:** Ein Schüler soll seine Anfrage **zurückziehen** können. Dafür brauchst du einen neuen Nachrichtentyp `cancel`, der auch zuverlässig mit ACK gesendet wird.
 5. **Schwer:** Wenn es zwei Coaches gibt und einer „Erledigt“ klickt, soll die Anfrage auch beim anderen verschwinden. Wie erfahren die Coaches voneinander?
-6. **Schwer:** Verschlüssle die Nachrichten mit einem Klassen-Passwort. Mit der Standardbibliothek geht das mit `hmac` und `hashlib`, aber nur zum *Signieren*, nicht zum Verschlüsseln. Überlege: Was bringt eine Signatur gegen Fälscher?
+6. **Schwer:** Die Nachrichten sind signiert, aber lesbar. Überlege: Warum gibt es in der Python-Standardbibliothek keine Verschlüsselung wie AES? Welche Bibliothek bräuchte man dafür, und was müsste man in `encode()` und `decode()` ändern?

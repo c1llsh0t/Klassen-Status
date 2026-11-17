@@ -1,5 +1,7 @@
 # Klassen-Status
 
+> **Neu:** Eine Peer-to-Peer-Version in Python ohne Server liegt im Ordner [`p2p-python/`](p2p-python/).
+
 Desktop-App für die Klasse (Windows, Mac, Linux). Alle sehen, wer gerade frei ist, und mit einem Klick auf **Hilfe** bekommt der Admin eine Meldung.
 
 | Farbe | Bedeutung |

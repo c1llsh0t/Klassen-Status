@@ -1,52 +1,57 @@
-# Klassenzimmer-App (Peer-to-Peer, Python)
+# Klassenzimmer
 
-Alle Rechner im selben WLAN/LAN sehen sich gegenseitig, **ohne Server**. Schüler können den Coach um Hilfe fragen, und der Coach sieht die Anfragen in einer Warteschlange.
+Eine Peer-to-Peer-App fürs Klassenzimmer: Alle Rechner im selben WLAN/LAN sehen sich gegenseitig, **ohne Server**. Schüler fragen den Coach per Knopfdruck um Hilfe, und der Coach sieht alle Anfragen in einer Warteschlange.
 
-- grün = online, gelb = nicht stören, grau = offline (10 Sekunden ohne Meldung)
-- nur Python 3 mit der Standardbibliothek (socket, threading, json, tkinter)
+- 🟢 online · 🟡 nicht stören · ⚪ offline (10 Sekunden nichts gehört)
+- die Klasse wird gespeichert, sodass am nächsten Tag alle schon in der Liste stehen
+- mehrere Klassen im selben WLAN stören sich nicht
+- Autostart beim Anmelden
+- nur Python 3 mit der Standardbibliothek, alles in **einer Datei**: `klassenzimmer.py`
 
 ## Herunterladen
 
 Fertige Programme für Windows, Mac und Linux gibt es unter **[Releases](../../releases/latest)**. Python muss dafür nicht installiert sein.
 
-## Autostart
-
-Im Startfenster das Häkchen **„Beim Anmelden automatisch starten“** setzen. Name und Rolle werden gespeichert, und die App startet beim nächsten Anmelden von selbst, ohne nachzufragen. Zum Ausschalten die App normal starten und das Häkchen entfernen.
-
 ## Starten (aus dem Code)
 
 ```
-python3 main.py                                   # fragt Name und Rolle ab
-python3 main.py --name Lena --role student
-python3 main.py --name "Herr Keller" --role coach
+python3 klassenzimmer.py
 ```
 
-Optionen:
+Das Startfenster fragt nach Name, Klasse und Rolle und bietet den Autostart an. Alles wird gespeichert.
+
+Testmodus (speichert nichts, mehrere Apps auf einem PC möglich):
+
+```
+python3 klassenzimmer.py --name Lena --role student --klasse INF3a
+python3 klassenzimmer.py --name "Herr Keller" --role coach --klasse INF3a
+```
 
 | Option | Wofür |
 |---|---|
+| `--klasse INF3a` | Klassenname (im Testmodus, sonst „Standard“) |
+| `--autostart` | gespeicherte Einstellungen benutzen, nicht nachfragen |
 | `--port 50506` | fester Port für direkte Nachrichten (für Firewalls) |
 | `--broadcast 192.168.1.255` | eigene Broadcast-Adresse, wenn 255.255.255.255 nicht geht |
-| `--autostart` | gespeicherten Namen und Rolle benutzen, nicht nachfragen |
 | `--verlust 0.3` | zum Üben: 30 % der Pakete gehen absichtlich verloren |
 
-Unter Linux muss eventuell `tkinter` nachinstalliert werden, z.B. `sudo apt install python3-tk` oder auf Arch/Omarchy `sudo pacman -S tk`.
+Fehlt unter Linux `tkinter`: `sudo apt install python3-tk` bzw. auf Arch/Omarchy `sudo pacman -S tk`.
 
 ## Tests
 
 ```
-python3 -m unittest -v test_network test_autostart
+python3 -m unittest -v test_klassenzimmer
 ```
 
 ## Dateien
 
 | Datei | Inhalt |
 |---|---|
-| `PROTOKOLL.md` | Schritt 1: alle Nachrichten mit Beispiel-JSON |
-| `protocol.py` | Nachrichten bauen und prüfen |
-| `network.py` | UDP-Broadcast, Heartbeat, ACK und Wiederholung, Duplikate |
-| `gui.py` | tkinter-Oberfläche |
-| `main.py` | Startpunkt |
-| `autostart.py` | Autostart und gespeicherte Einstellungen |
-| `test_network.py` | automatische Tests |
-| `ANLEITUNG.md` | ausführliche Erklärung, Fehlersuche und Übungen |
+| `klassenzimmer.py` | die ganze App (6 Teile, mit Kommentaren) |
+| `test_klassenzimmer.py` | 19 automatische Tests |
+| `ERKLAERUNG.md` | **alle Funktionen und wie alles funktioniert, zum Weitererklären** |
+| `ANLEITUNG.md` | ausführliche technische Erklärung, Fehlersuche, Übungen |
+| `PROTOKOLL.md` | alle Nachrichten mit Beispiel-JSON |
+| `schritte/` | Lernversion: Konsolenprogramm aus Schritt 2 |
+
+Neue Version veröffentlichen: auf GitHub **Actions → Programme bauen → Run workflow**.

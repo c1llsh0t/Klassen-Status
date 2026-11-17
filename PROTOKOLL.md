@@ -6,18 +6,19 @@ Jede Nachricht ist ein JSON-Objekt und wird als UTF-8 über UDP verschickt. Drei
 |---|---|
 | `type` | was für eine Nachricht es ist |
 | `id` | eine eindeutige ID **dieser** Nachricht (`uuid4`), damit man Duplikate erkennt |
-| `from` | die ID der App, die sie geschickt hat. Sie wird bei jedem Start neu erzeugt. Wir nehmen nicht den Namen, weil zwei Leute gleich heissen können. |
+| `from` | die feste ID der App, die sie geschickt hat. Sie wird beim ersten Start erzeugt und gespeichert. Wir nehmen nicht den Namen, weil zwei Leute gleich heissen können. |
 
 ## Nachrichtentypen
 
 ### 1. `heartbeat`: „Ich bin da“
 Geht alle 5 Sekunden per **Broadcast** an alle, auf Port 50505.
 ```json
-{"type": "heartbeat", "id": "b3f1c2…", "from": "a91c7e…",
- "name": "Lena", "role": "student", "status": "online", "port": 51234}
+{"type": "heartbeat", "id": "b3f1c2…", "from": "a91c7e…", "name": "Lena",
+ "role": "student", "status": "online", "class": "INF3a", "port": 51234}
 ```
 - `role`: `student` oder `coach`
 - `status`: `online` (grün) oder `busy` (gelb, nicht stören). „Offline“ (grau) wird nie verschickt. Das erkennt jeder selbst, wenn 10 Sekunden lang kein Heartbeat kommt.
+- `class`: der Klassenname. Heartbeats einer anderen Klasse werden ignoriert, so stören sich mehrere Klassen im selben WLAN nicht. Gross-/Kleinschreibung ist egal.
 - `port`: der Port, an den man mir **direkt** schreibt. Jede App hört dafür auf einem zweiten, eigenen Port. Der Vorteil: Man kann mehrere Apps auf einem Rechner testen, ohne dass sie sich die direkten Nachrichten wegnehmen.
 
 ### 2. `bye`: „Ich gehe“

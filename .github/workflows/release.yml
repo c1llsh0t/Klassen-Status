@@ -21,7 +21,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: '3.12' }
-      - run: python -m unittest -v test_network test_autostart
+      - run: python -m unittest -v test_klassenzimmer
 
   build:
     needs: test
@@ -46,7 +46,7 @@ jobs:
         if: runner.os != 'macOS'
         shell: bash
         run: |
-          pyinstaller --onefile --windowed --name Klassenzimmer main.py
+          pyinstaller --onefile --windowed --name Klassenzimmer klassenzimmer.py
           mkdir out
           if [ "$RUNNER_OS" = "Windows" ]; then
             cp dist/Klassenzimmer.exe "out/${{ matrix.file }}"
@@ -57,7 +57,7 @@ jobs:
       - name: Mac bauen
         if: runner.os == 'macOS'
         run: |
-          pyinstaller --windowed --name Klassenzimmer --osx-bundle-identifier ch.klassenzimmer.app main.py
+          pyinstaller --windowed --name Klassenzimmer --osx-bundle-identifier ch.klassenzimmer.app klassenzimmer.py
           # macOS fragt seit Version 15 nach, bevor eine App im lokalen Netz senden darf.
           # Dafür braucht die App einen Text, warum sie das will:
           plutil -insert NSLocalNetworkUsageDescription -string "Klassenzimmer sucht andere Teilnehmer im lokalen Netzwerk." dist/Klassenzimmer.app/Contents/Info.plist

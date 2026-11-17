@@ -1,6 +1,7 @@
 # Baut fertige Programme für Windows, Mac und Linux.
-#  - Neue Version: auf GitHub "Actions" -> "Programme bauen" -> "Run workflow".
-#    Danach gibt es unter "Releases" eine neue Version (v1.0.<Nummer>) mit allen Dateien.
+#  - Automatisch: Sobald klassenzimmer.py auf main geändert wird, entsteht ein
+#    neues Release (v1.0.<Nummer>) mit allen Dateien.
+#  - Von Hand: auf GitHub "Actions" -> "Programme bauen" -> "Run workflow".
 #  - Ein Tag wie v2.0.0 erstellt ebenfalls ein Release mit diesem Namen.
 # PyInstaller wird nur zum Verpacken gebraucht – die App selbst benutzt
 # weiterhin nur die Standardbibliothek.
@@ -10,6 +11,11 @@ on:
   workflow_dispatch:
   push:
     tags: ['v*']
+    branches: [main]
+    paths:
+      - klassenzimmer.py
+      - test_klassenzimmer.py
+      - .github/workflows/release.yml
 
 permissions:
   contents: read

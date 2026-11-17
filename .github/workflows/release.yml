@@ -1,6 +1,7 @@
 # Baut fertige Programme für Windows, Mac und Linux.
-#  - Bei einem Tag wie v1.0.0 wird automatisch ein Release mit den Dateien erstellt.
-#  - Unter "Actions" -> "Programme bauen" -> "Run workflow" kann man auch nur bauen.
+#  - Neue Version: auf GitHub "Actions" -> "Programme bauen" -> "Run workflow".
+#    Danach gibt es unter "Releases" eine neue Version (v1.0.<Nummer>) mit allen Dateien.
+#  - Ein Tag wie v2.0.0 erstellt ebenfalls ein Release mit diesem Namen.
 # PyInstaller wird nur zum Verpacken gebraucht – die App selbst benutzt
 # weiterhin nur die Standardbibliothek.
 name: Programme bauen
@@ -70,7 +71,6 @@ jobs:
           path: out/*
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-latest
     permissions:
@@ -80,6 +80,10 @@ jobs:
         with: { path: out, merge-multiple: true }
       - uses: softprops/action-gh-release@v2
         with:
+          # Bei einem Tag dessen Namen nehmen, sonst automatisch v1.0.<Nummer>
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v1.0.{0}', github.run_number) }}
+          target_commitish: ${{ github.sha }}
+          make_latest: true
           files: out/*
           body: |
             **Windows:** `Klassenzimmer-Windows.exe` herunterladen und starten. Bei "Der Computer wurde durch Windows geschützt": *Weitere Informationen → Trotzdem ausführen*. Bei der Firewall-Frage *Zulassen* wählen.

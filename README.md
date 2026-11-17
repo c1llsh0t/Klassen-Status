@@ -11,41 +11,68 @@ Eine Peer-to-Peer-App fürs Klassenzimmer: Alle Rechner im selben WLAN/LAN sehen
 
 ---
 
-## 🤖 Zu faul? Lass Claude installieren
+## 🤖 Zu faul? Lass Claude alles installieren
 
-Kopiere diesen Text in **Claude** (Claude Code oder die Claude-App mit Zugriff auf deinen Computer). Claude erledigt den Rest und fragt dich nur nach Name, Klasse und Rolle.
+Kopiere diesen Text in **Claude** (Claude Code oder die Claude-App mit Zugriff auf deinen Computer). Claude fragt dich einmal nach Name, Klasse und Rolle und erledigt dann **alles** selbst: herunterladen, installieren, Firewall freigeben, Autostart einrichten und starten. Funktioniert auch zum **Aktualisieren**.
 
 ```text
-Installiere mir die App "Klassenzimmer" auf diesem Computer und richte den Autostart ein.
+Installiere die App "Klassenzimmer" komplett auf diesem Computer. Mach alles selbst,
+ohne mich bei jedem Schritt zu fragen. Frag mich nur EINMAL ganz am Anfang:
+  - meinen Namen
+  - meine Klasse (z.B. INF3a)
+  - ob ich "student" oder "coach" bin
 
-1. Finde heraus, welches Betriebssystem ich habe (Windows, macOS oder Linux).
-2. Lade von https://github.com/c1llsh0t/Klassen-Status/releases/latest die passende Datei:
-   - Windows: Klassenzimmer-Windows.exe
-   - macOS:   Klassenzimmer-Mac.zip
-   - Linux:   Klassenzimmer-Linux
-3. Lege sie an einen festen Platz (dort bleibt sie, weil der Autostart sich den Pfad merkt):
-   - Windows: %LOCALAPPDATA%\Programs\Klassenzimmer\Klassenzimmer.exe
-   - macOS:   entpacken mit "ditto -x -k" nach /Applications/Klassenzimmer.app,
-              danach "xattr -dr com.apple.quarantine /Applications/Klassenzimmer.app"
-   - Linux:   ~/.local/bin/klassenzimmer und "chmod +x" darauf
-4. Firewall (frag mich vorher, bevor du etwas mit Admin-Rechten/sudo machst):
+Dann:
+
+1. Betriebssystem herausfinden (Windows, macOS oder Linux).
+
+2. Falls Klassenzimmer schon läuft (Update), den Prozess beenden.
+
+3. Herunterladen und an den festen Platz legen (Ordner anlegen, alte Version überschreiben):
+   - Windows:
+       https://github.com/c1llsh0t/Klassen-Status/releases/latest/download/Klassenzimmer-Windows.exe
+       -> %LOCALAPPDATA%\Programs\Klassenzimmer\Klassenzimmer.exe
+       danach in PowerShell: Unblock-File auf die exe (sonst blockiert SmartScreen)
+   - macOS:
+       https://github.com/c1llsh0t/Klassen-Status/releases/latest/download/Klassenzimmer-Mac.zip
+       -> mit "ditto -x -k" entpacken nach /Applications/Klassenzimmer.app (alte vorher löschen)
+       danach: xattr -dr com.apple.quarantine /Applications/Klassenzimmer.app
+   - Linux:
+       https://github.com/c1llsh0t/Klassen-Status/releases/latest/download/Klassenzimmer-Linux
+       -> ~/.local/bin/klassenzimmer, danach chmod +x
+
+4. Firewall freigeben (UDP-Ports 50505 und 50506):
+   - Windows: eingehende Firewall-Regel "Klassenzimmer" für die exe, Protokoll UDP,
+     Ports 50505-50506, alle Profile (netsh advfirewall firewall add rule ...).
+     Braucht Admin-Rechte: per Start-Process -Verb RunAs ausführen, dann muss ich
+     nur bei der Windows-Abfrage auf "Ja" klicken.
    - Linux: wenn ufw aktiv ist: sudo ufw allow 50505:50506/udp
-            wenn firewalld aktiv ist: Ports 50505-50506/udp dauerhaft freigeben
-   - Windows: wenn möglich eine eingehende Regel für die exe im Profil "Privat" anlegen,
-              sonst sag mir, dass ich beim ersten Start "Zulassen" klicken muss.
-   - macOS: nichts, aber sag mir, dass ich "Lokales Netzwerk -> Erlauben" klicken muss.
-5. Frag mich nach meinem Namen, meiner Klasse (z.B. INF3a) und ob ich student oder coach bin.
-6. Starte die App einmal so (das speichert alles und schaltet den Autostart ein):
-   <Pfad zur App> --name "<Name>" --klasse "<Klasse>" --role <student|coach> --speichern
-   Auf macOS stattdessen: /Applications/Klassenzimmer.app/Contents/MacOS/Klassenzimmer ...
-7. Prüfe, ob der Autostart-Eintrag existiert:
-   - Windows: Registry HKCU\Software\Microsoft\Windows\CurrentVersion\Run, Wert "klassenzimmer"
-   - macOS:   ~/Library/LaunchAgents/ch.klassenzimmer.app.plist
-   - Linux:   ~/.config/autostart/klassenzimmer.desktop
-     Bei Hyprland (z.B. Omarchy) zusätzlich in ~/.config/hypr/autostart.conf die Zeile
-     "exec-once = ~/.local/bin/klassenzimmer --autostart" eintragen, falls noch nicht vorhanden.
-8. Sag mir am Schluss kurz, was du gemacht hast und was ich noch selbst anklicken muss
-   (z.B. Windows-SmartScreen "Trotzdem ausführen" oder macOS "Dennoch öffnen").
+            wenn firewalld aktiv ist: Ports 50505-50506/udp dauerhaft freigeben und neu laden
+            (Falls sudo ein Passwort braucht, das du nicht eingeben kannst: gib mir genau
+             den einen Befehl zum Kopieren und mach danach weiter.)
+   - macOS: nichts zu tun.
+
+5. Einrichten und starten (speichert Name/Klasse/Rolle und schaltet den Autostart ein).
+   Die App so im Hintergrund starten, dass sie weiterläuft, wenn du fertig bist:
+   - Windows: "%LOCALAPPDATA%\Programs\Klassenzimmer\Klassenzimmer.exe" --name "<Name>" --klasse "<Klasse>" --role <Rolle> --speichern
+   - macOS:   /Applications/Klassenzimmer.app/Contents/MacOS/Klassenzimmer --name "<Name>" --klasse "<Klasse>" --role <Rolle> --speichern
+   - Linux:   ~/.local/bin/klassenzimmer --name "<Name>" --klasse "<Klasse>" --role <Rolle> --speichern
+     (mit nohup oder setsid, damit sie nach dem Terminal weiterläuft)
+
+6. Linux mit Hyprland (z.B. Omarchy): Falls ~/.config/hypr/autostart.conf existiert und
+   die Zeile noch fehlt, "exec-once = ~/.local/bin/klassenzimmer --autostart" anhängen.
+   Ohne autostart.conf: in ~/.config/hypr/hyprland.conf anhängen.
+
+7. Prüfen:
+   - läuft der Prozess?
+   - gibt es den Autostart-Eintrag?
+       Windows: Registry HKCU\Software\Microsoft\Windows\CurrentVersion\Run, Wert "klassenzimmer"
+       macOS:   ~/Library/LaunchAgents/ch.klassenzimmer.app.plist
+       Linux:   ~/.config/autostart/klassenzimmer.desktop
+   Wenn etwas nicht klappt, selbst beheben und nochmal prüfen.
+
+8. Zum Schluss nur kurz sagen, dass alles fertig ist. Auf macOS zusätzlich:
+   "Wenn gefragt wird, ob Klassenzimmer Geräte im lokalen Netzwerk finden darf: Erlauben klicken."
 ```
 
 ---

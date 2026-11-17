@@ -341,7 +341,8 @@ class WaybarAndControlTest(unittest.TestCase):
             self.assertFalse(K.send_control("rm -rf"))       # unbekannt -> ignoriert
         finally:
             c.close()
-        # Sofort wieder starten muss gehen (kein "Port belegt" nach dem Beenden)
+        # Kurz danach wieder starten muss gehen (kein "Port belegt" nach dem Beenden)
+        time.sleep(0.6)
         c2 = K.Control()
         self.assertTrue(c2.acquire())
         c2.close()

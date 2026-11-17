@@ -489,7 +489,14 @@ class Control:
     def close(self):
         self.running = False
         if self.sock:
+            try:
+                # weckt den wartenden accept()-Thread sofort auf, damit der
+                # Port wirklich frei wird (sonst erst nach bis zu 0.5 s)
+                self.sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
             self.sock.close()
+            self.sock = None
 
 
 def send_control(cmd):

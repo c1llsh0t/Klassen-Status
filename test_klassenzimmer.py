@@ -187,6 +187,13 @@ class NetworkTest(unittest.TestCase):
         ev, _ = wait_for(qs, "done")
         self.assertEqual(ev[1], help_id)
 
+    def test_fester_port_und_ausweichen(self):
+        a, qa = self.make("Lena", "student", port=K.DIRECT_PORT, port_fallback=True)
+        self.assertEqual(a.me["port"], K.DIRECT_PORT)
+        b, qb = self.make("Tim", "student", port=K.DIRECT_PORT, port_fallback=True)
+        self.assertNotEqual(b.me["port"], K.DIRECT_PORT)    # besetzt -> anderer Port
+        find_peer(qa, "Tim")
+
     def test_bye_beim_beenden(self):
         a, qa = self.make("Lena", "student")
         me = {"peer_id": K.new_id(), "name": "Tim", "role": "student", "status": "online", "klasse": "INF3a"}

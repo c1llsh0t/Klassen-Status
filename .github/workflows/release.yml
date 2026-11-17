@@ -86,6 +86,8 @@ jobs:
           make_latest: true
           files: out/*
           body: |
-            **Windows:** `Klassenzimmer-Windows.exe` herunterladen und starten. Bei "Der Computer wurde durch Windows geschützt": *Weitere Informationen → Trotzdem ausführen*. Bei der Firewall-Frage *Zulassen* wählen.
-            **Mac (Apple-Chip):** `Klassenzimmer-Mac.zip` entpacken, App in "Programme" ziehen, dann *Rechtsklick → Öffnen*. Die Frage nach dem lokalen Netzwerk mit *Erlauben* beantworten.
-            **Linux:** `chmod +x Klassenzimmer-Linux` und starten.
+            Anleitung für Installation und Autostart: siehe **INSTALLATION.md** im Repository.
+
+            **Windows:** `Klassenzimmer-Windows.exe` in einen festen Ordner legen und starten. *Weitere Informationen → Trotzdem ausführen*, bei der Firewall *Private Netzwerke → Zulassen*.
+            **Mac (Apple-Chip):** `Klassenzimmer-Mac.zip` entpacken, App in *Programme* ziehen, öffnen, dann *Systemeinstellungen → Datenschutz & Sicherheit → Dennoch öffnen*. Lokales Netzwerk *Erlauben*.
+            **Linux:** `Klassenzimmer-Linux` nach `~/.local/bin/` verschieben, `chmod +x`, starten. Mit ufw: `sudo ufw allow 50505:50506/udp`.

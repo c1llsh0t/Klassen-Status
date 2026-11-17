@@ -71,6 +71,8 @@ APP_VERSION = "1.1"
 # Details und Beispiele: siehe PROTOKOLL.md
 
 DISCOVERY_PORT = 50505        # hier hören alle auf Broadcasts (UDP)
+DIRECT_PORT = 50506           # hier kommen direkte Nachrichten an (help, done, ack).
+                              # Fest, damit man in der Firewall nur 50505-50506 öffnen muss.
 HEARTBEAT_INTERVAL = 5.0      # alle 5 s "Ich bin da"
 OFFLINE_AFTER = 20.0          # 20 s nichts gehört -> grau (= 4 verpasste Heartbeats)
 ACK_TIMEOUT = 3.0             # 3 s auf Bestätigung warten, dann nochmal
@@ -370,12 +372,14 @@ def set_autostart(enabled):
 #   ("log", text)       Info für die Konsole
 
 class Network:
-    def __init__(self, me, events, broadcast_addr="255.255.255.255", loss=0.0, port=0):
+    def __init__(self, me, events, broadcast_addr="255.255.255.255", loss=0.0, port=0,
+                 port_fallback=False):
         self.me = me                      # dict: peer_id, name, role, status, klasse
         self.events = events
         self.broadcast_addr = broadcast_addr
         self.loss = loss                  # zum Üben: Anteil verlorener Pakete
         self.unicast_port = port          # 0 = Betriebssystem wählt
+        self.port_fallback = port_fallback  # Port besetzt -> irgendeinen freien nehmen
         self.lock = threading.Lock()      # schützt me, pending, seen, known
         self.running = False
         self.pending = {}                 # msg_id -> {msg, addr, tries, next}
@@ -398,7 +402,14 @@ class Network:
         self.usock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.usock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         try:
-            self.usock.bind(("", self.unicast_port))
+            try:
+                self.usock.bind(("", self.unicast_port))
+            except OSError:
+                if not (self.port_fallback and self.unicast_port):
+                    raise
+                self.usock.bind(("", 0))       # Port besetzt -> freien Port nehmen
+                self.events.put(("log", "Port %d besetzt, benutze %d"
+                                 % (self.unicast_port, self.usock.getsockname()[1])))
         except OSError:
             self.bsock.close()
             self.usock.close()
@@ -945,7 +956,7 @@ def main():
     parser.add_argument("--autostart", action="store_true",
                         help="gespeicherte Einstellungen benutzen, nicht nachfragen")
     parser.add_argument("--port", type=int, default=0,
-                        help="fester Port für direkte Nachrichten (z.B. 50506)")
+                        help="Port für direkte Nachrichten (Standard: 50506, im Testmodus zufällig)")
     parser.add_argument("--broadcast", default="255.255.255.255",
                         help="Broadcast-Adresse, z.B. 192.168.1.255")
     parser.add_argument("--verlust", type=float, default=0.0,
@@ -990,7 +1001,11 @@ def main():
 
     me["status"] = "online"
     events = queue.Queue()
-    net = Network(me, events, broadcast_addr=args.broadcast, loss=args.verlust, port=args.port)
+    # Normal: fester Port 50506 (gut für Firewalls). Testmodus: zufälliger Port,
+    # damit mehrere Apps auf einem PC laufen können.
+    port = args.port or (0 if test_mode else DIRECT_PORT)
+    net = Network(me, events, broadcast_addr=args.broadcast, loss=args.verlust,
+                  port=port, port_fallback=not args.port)
     try:
         net.start()
     except OSError as e:

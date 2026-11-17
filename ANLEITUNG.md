@@ -248,7 +248,7 @@ Der Coach „verliert“ jetzt die Hälfte aller Pakete. Bei Lena siehst du „V
 
 ## Wenn es nicht klappt
 
-- **Niemand wird gefunden:** Die **Firewall** blockiert oft UDP. Unter Windows erscheint beim ersten Start eine Frage, dort „Zulassen“ wählen (privates Netzwerk). Unter Linux mit `ufw` (z.B. Omarchy) braucht es zwei Ports: Port 50505 für die Broadcasts und einen festen Port für direkte Nachrichten. Starte die App mit `--port 50506` und erlaube beide Ports: `sudo ufw allow 50505:50506/udp`.
+- **Niemand wird gefunden:** Die **Firewall** blockiert oft UDP. Unter Windows erscheint beim ersten Start eine Frage, dort „Zulassen“ wählen (privates Netzwerk). Unter Linux mit `ufw` (z.B. Omarchy) braucht es zwei Ports: 50505 für die Broadcasts und 50506 für direkte Nachrichten (`DIRECT_PORT`). Beide erlaubst du mit `sudo ufw allow 50505:50506/udp`. Ist 50506 schon besetzt, weicht die App auf einen zufälligen Port aus. Im Testmodus nimmt sie immer einen zufälligen Port, damit mehrere Apps auf einem PC laufen können.
 - **Schul-WLAN mit „Client Isolation“:** Manche WLANs verbieten, dass Geräte direkt miteinander reden. Dann geht Peer-to-Peer gar nicht. Ausprobieren, sonst mit einem eigenen Router oder Hotspot.
 - **Mehrere Netzwerkkarten:** `255.255.255.255` geht manchmal nur über eine Netzwerkkarte raus. Gib dann die Broadcast-Adresse deines Netzes an, z.B. `--broadcast 192.168.1.255`.
 - **Mac:** Beim ersten Start fragt macOS, ob Python im lokalen Netzwerk kommunizieren darf. Mit „Erlauben“ bestätigen.

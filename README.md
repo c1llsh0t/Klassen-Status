@@ -31,7 +31,7 @@ python3 klassenzimmer.py --name "Herr Keller" --role coach --klasse INF3a
 |---|---|
 | `--klasse INF3a` | Klassenname (im Testmodus, sonst „Standard“) |
 | `--autostart` | gespeicherte Einstellungen benutzen, nicht nachfragen |
-| `--port 50506` | fester Port für direkte Nachrichten (für Firewalls) |
+| `--port 50510` | anderer Port für direkte Nachrichten (Standard: 50506) |
 | `--broadcast 192.168.1.255` | eigene Broadcast-Adresse, wenn 255.255.255.255 nicht geht |
 | `--verlust 0.3` | zum Üben: 30 % der Pakete gehen absichtlich verloren |
 
@@ -50,6 +50,7 @@ python3 -m unittest -v test_klassenzimmer
 | `klassenzimmer.py` | die ganze App (6 Teile, mit Kommentaren) |
 | `test_klassenzimmer.py` | 19 automatische Tests |
 | `ERKLAERUNG.md` | **alle Funktionen und wie alles funktioniert, zum Weitererklären** |
+| `INSTALLATION.md` | **Installation und Autostart für Windows, Mac und Linux** |
 | `ANLEITUNG.md` | ausführliche technische Erklärung, Fehlersuche, Übungen |
 | `PROTOKOLL.md` | alle Nachrichten mit Beispiel-JSON |
 | `schritte/` | Lernversion: Konsolenprogramm aus Schritt 2 |

@@ -8,6 +8,10 @@ Starten:
 
 Zum Üben (simuliert 30 % Paketverlust, damit man die Wiederholungen sieht):
     python3 main.py --name Tim --role student --verlust 0.3
+
+Autostart: Im Startfenster das Häkchen "Beim Anmelden automatisch starten"
+setzen. Name und Rolle werden gespeichert, und beim Anmelden startet die
+App mit --autostart ohne nachzufragen.
 """
 
 import argparse
@@ -15,13 +19,15 @@ import queue
 import sys
 import tkinter as tk
 
+import autostart
 import protocol as P
 from gui import App
 from network import Network
 
 
 def ask_name_and_role(name, role):
-    """Kleines Startfenster für Name und Rolle. Gibt (name, role) oder None zurück."""
+    """Kleines Startfenster für Name, Rolle und Autostart.
+    Gibt (name, role, autostart) oder None zurück."""
     result = {}
     win = tk.Tk()
     win.title("Klassenzimmer – Start")
@@ -40,21 +46,25 @@ def ask_name_and_role(name, role):
     tk.Radiobutton(frame, text="Schüler/in", variable=role_var, value="student").grid(row=3, column=0, sticky="w")
     tk.Radiobutton(frame, text="Coach", variable=role_var, value="coach").grid(row=3, column=1, sticky="w")
 
+    auto_var = tk.BooleanVar(value=autostart.is_enabled())
+    tk.Checkbutton(frame, text="Beim Anmelden automatisch starten",
+                   variable=auto_var).grid(row=4, column=0, columnspan=2, sticky="w", pady=(10, 0))
+
     error = tk.Label(frame, text="", fg="#b00")
-    error.grid(row=4, column=0, columnspan=2, sticky="w")
+    error.grid(row=5, column=0, columnspan=2, sticky="w")
 
     def ok(_event=None):
         n = P.clean_name(name_var.get())
         if not n:
             error.configure(text="Bitte einen Namen eingeben.")
             return
-        result["name"], result["role"] = n, role_var.get()
+        result["name"], result["role"], result["auto"] = n, role_var.get(), auto_var.get()
         win.destroy()
 
-    tk.Button(frame, text="Los geht's", command=ok).grid(row=5, column=0, columnspan=2, pady=(8, 0), sticky="we")
+    tk.Button(frame, text="Los geht's", command=ok).grid(row=6, column=0, columnspan=2, pady=(8, 0), sticky="we")
     win.bind("<Return>", ok)
     win.mainloop()
-    return (result["name"], result["role"]) if result else None
+    return (result["name"], result["role"], result["auto"]) if result else None
 
 
 def main():
@@ -65,16 +75,29 @@ def main():
                         help="Broadcast-Adresse (Standard: 255.255.255.255)")
     parser.add_argument("--port", type=int, default=0,
                         help="fester Port für direkte Nachrichten, z.B. 50506 (Standard: zufällig)")
+    parser.add_argument("--autostart", action="store_true",
+                        help="gespeicherten Namen und Rolle benutzen, nicht nachfragen")
     parser.add_argument("--verlust", type=float, default=0.0,
                         help="zum Üben: Anteil verlorener Pakete, z.B. 0.3")
     args = parser.parse_args()
 
+    saved = autostart.load_settings()
     name, role = P.clean_name(args.name or ""), args.role
+
+    if args.autostart and not (name and role):
+        # Beim Autostart: gespeicherte Werte nehmen (falls gültig)
+        name = P.clean_name(saved.get("name", ""))
+        role = saved.get("role") if saved.get("role") in P.ROLES else None
+
     if not name or not role:
-        answer = ask_name_and_role(name, role)
+        answer = ask_name_and_role(name or saved.get("name"), role or saved.get("role"))
         if answer is None:
             sys.exit(0)  # Startfenster wurde geschlossen
-        name, role = answer
+        name, role, auto = answer
+        autostart.save_settings({"name": name, "role": role})
+        problem = autostart.set_enabled(auto)
+        if problem:
+            print(problem)
 
     # "me" beschreibt diese App-Instanz. peer_id ist bei jedem Start neu.
     me = {"peer_id": P.new_id(), "name": name, "role": role, "status": "online"}

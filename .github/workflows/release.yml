@@ -1,0 +1,87 @@
+# Baut fertige Programme für Windows, Mac und Linux.
+#  - Bei einem Tag wie v1.0.0 wird automatisch ein Release mit den Dateien erstellt.
+#  - Unter "Actions" -> "Programme bauen" -> "Run workflow" kann man auch nur bauen.
+# PyInstaller wird nur zum Verpacken gebraucht – die App selbst benutzt
+# weiterhin nur die Standardbibliothek.
+name: Programme bauen
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: python -m unittest -v test_network test_autostart
+
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            file: Klassenzimmer-Windows.exe
+          - os: macos-latest
+            file: Klassenzimmer-Mac.zip
+          - os: ubuntu-latest
+            file: Klassenzimmer-Linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install pyinstaller
+
+      - name: Windows / Linux bauen
+        if: runner.os != 'macOS'
+        shell: bash
+        run: |
+          pyinstaller --onefile --windowed --name Klassenzimmer main.py
+          mkdir out
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cp dist/Klassenzimmer.exe "out/${{ matrix.file }}"
+          else
+            cp dist/Klassenzimmer "out/${{ matrix.file }}"
+          fi
+
+      - name: Mac bauen
+        if: runner.os == 'macOS'
+        run: |
+          pyinstaller --windowed --name Klassenzimmer --osx-bundle-identifier ch.klassenzimmer.app main.py
+          # macOS fragt seit Version 15 nach, bevor eine App im lokalen Netz senden darf.
+          # Dafür braucht die App einen Text, warum sie das will:
+          plutil -insert NSLocalNetworkUsageDescription -string "Klassenzimmer sucht andere Teilnehmer im lokalen Netzwerk." dist/Klassenzimmer.app/Contents/Info.plist
+          codesign --force --deep -s - dist/Klassenzimmer.app
+          mkdir out
+          ditto -c -k --keepParent dist/Klassenzimmer.app "out/${{ matrix.file }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.file }}
+          path: out/*
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: out, merge-multiple: true }
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: out/*
+          body: |
+            **Windows:** `Klassenzimmer-Windows.exe` herunterladen und starten. Bei "Der Computer wurde durch Windows geschützt": *Weitere Informationen → Trotzdem ausführen*. Bei der Firewall-Frage *Zulassen* wählen.
+            **Mac (Apple-Chip):** `Klassenzimmer-Mac.zip` entpacken, App in "Programme" ziehen, dann *Rechtsklick → Öffnen*. Die Frage nach dem lokalen Netzwerk mit *Erlauben* beantworten.
+            **Linux:** `chmod +x Klassenzimmer-Linux` und starten.

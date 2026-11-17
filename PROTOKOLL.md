@@ -17,7 +17,7 @@ Geht alle 5 Sekunden per **Broadcast** an alle, auf Port 50505.
  "role": "student", "status": "online", "class": "INF3a", "port": 51234}
 ```
 - `role`: `student` oder `coach`
-- `status`: `online` (grün) oder `busy` (gelb, nicht stören). „Offline“ (grau) wird nie verschickt. Das erkennt jeder selbst, wenn 10 Sekunden lang kein Heartbeat kommt.
+- `status`: `online` (grün) oder `busy` (gelb, nicht stören). „Offline“ (grau) wird nie verschickt. Das erkennt jeder selbst, wenn 20 Sekunden lang kein Heartbeat kommt.
 - `class`: der Klassenname. Heartbeats einer anderen Klasse werden ignoriert, so stören sich mehrere Klassen im selben WLAN nicht. Gross-/Kleinschreibung ist egal.
 - `port`: der Port, an den man mir **direkt** schreibt. Jede App hört dafür auf einem zweiten, eigenen Port. Der Vorteil: Man kann mehrere Apps auf einem Rechner testen, ohne dass sie sich die direkten Nachrichten wegnehmen.
 

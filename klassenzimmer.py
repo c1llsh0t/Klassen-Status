@@ -8,7 +8,7 @@ Server: Jede laufende App ist gleichwertig und redet direkt mit den anderen.
 
 Funktionen
   - Teilnehmerliste mit farbigem Punkt: grün = online, gelb = nicht stören,
-    grau = offline (10 Sekunden nichts gehört)
+    grau = offline (20 Sekunden nichts gehört)
   - eigenen Status per Klick zwischen grün und gelb wechseln
   - Schüler: "Coach um Hilfe fragen" (mit optionalem Text) + Bestätigung
   - Coach: Warteschlange der Hilfeanfragen (älteste zuerst), "Erledigt"
@@ -72,7 +72,7 @@ APP_VERSION = "1.1"
 
 DISCOVERY_PORT = 50505        # hier hören alle auf Broadcasts (UDP)
 HEARTBEAT_INTERVAL = 5.0      # alle 5 s "Ich bin da"
-OFFLINE_AFTER = 10.0          # 10 s nichts gehört -> grau
+OFFLINE_AFTER = 20.0          # 20 s nichts gehört -> grau (= 4 verpasste Heartbeats)
 ACK_TIMEOUT = 3.0             # 3 s auf Bestätigung warten, dann nochmal
 MAX_TRIES = 5                 # höchstens 5 Versuche
 MAX_PACKET = 4096             # grössere Pakete werden ignoriert

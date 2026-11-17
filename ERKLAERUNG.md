@@ -23,7 +23,7 @@ Das Besondere: Es gibt **keinen Server** und kein Konto. Die Apps reden direkt m
 | **Teilnehmerliste** | Alle aus der eigenen Klasse, jeweils mit farbigem Punkt |
 | 🟢 **Online** | Die Person ist da und darf angesprochen werden |
 | 🟡 **Nicht stören** | Die Person ist da, will aber gerade nicht gestört werden |
-| ⚪ **Offline** | Die App ist zu, oder seit 10 Sekunden kam kein Lebenszeichen |
+| ⚪ **Offline** | Die App ist zu, oder seit 20 Sekunden kam kein Lebenszeichen |
 | **Status wechseln** | Oben rechts auf den Knopf klicken: grün ↔ gelb. Die anderen sehen das nach weniger als einer Sekunde |
 | **Klasse wird gespeichert** | Wer einmal gesehen wurde, steht am nächsten Tag schon grau in der Liste und wird grün, sobald er die App startet |
 | **Aus Liste entfernen** | Bei grauen Namen auf ✕ klicken, z.B. wenn jemand die Klasse verlassen hat |
@@ -72,7 +72,7 @@ Alle 5 Sekunden ruft jede App ins WLAN: **„Ich bin Lena, Klasse INF3a, Status 
 
 ### Wie merkt man, dass jemand weg ist? → „Kein Herzschlag mehr“
 
-Hört man 10 Sekunden lang nichts von jemandem, also zwei Heartbeats verpasst, wird der Punkt **grau**. Wer die App normal schliesst, ruft vorher noch **„Tschüss!“** (`bye`). Dann wird er sofort grau.
+Hört man 20 Sekunden lang nichts von jemandem, also vier Heartbeats hintereinander verpasst, wird der Punkt **grau**. Wer die App normal schliesst, ruft vorher noch **„Tschüss!“** (`bye`). Dann wird er sofort grau.
 
 ### Wie kommt die Hilfeanfrage sicher an? → „Einschreiben mit Rückschein“
 

@@ -2,7 +2,7 @@
 
 Eine Peer-to-Peer-App fürs Klassenzimmer: Alle Rechner im selben WLAN/LAN sehen sich gegenseitig, **ohne Server**. Schüler fragen den Coach per Knopfdruck um Hilfe, und der Coach sieht alle Anfragen in einer Warteschlange.
 
-- 🟢 online · 🟡 nicht stören · ⚪ offline (10 Sekunden nichts gehört)
+- 🟢 online · 🟡 nicht stören · ⚪ offline (20 Sekunden nichts gehört)
 - die Klasse wird gespeichert, sodass am nächsten Tag alle schon in der Liste stehen
 - mehrere Klassen im selben WLAN stören sich nicht
 - Autostart beim Anmelden

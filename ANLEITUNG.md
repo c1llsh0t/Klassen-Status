@@ -94,8 +94,8 @@ self.usock.bind(("", 0))       # Port 0 = Betriebssystem sucht einen freien Port
 
 - Alle **5 Sekunden** schickt jede App einen `heartbeat` per Broadcast (`_timer_loop`).
 - Die GUI merkt sich bei jedem Teilnehmer `last_seen`, also wann er sich zuletzt gemeldet hat.
-- Ist das länger als **10 Sekunden** her, wird der Punkt **grau** (`_shown_status` in TEIL 5). 10 Sekunden heisst: Zwei Heartbeats hintereinander müssen fehlen. Ein einzelnes verlorenes Paket macht also niemanden grau.
-- Beim Beenden schickt die App `bye`. Dann wird man sofort grau und nicht erst nach 10 Sekunden.
+- Ist das länger als **20 Sekunden** her, wird der Punkt **grau** (`_shown_status` in TEIL 5). 20 Sekunden heisst: Vier Heartbeats hintereinander müssen fehlen. Ein paar verlorene Pakete oder ein kurz hängendes WLAN machen also niemanden grau. Ändern kann man das bei `OFFLINE_AFTER` in TEIL 1.
+- Beim Beenden schickt die App `bye`. Dann wird man sofort grau und nicht erst nach 20 Sekunden.
 
 **Nur die eigene Klasse:** Jeder Heartbeat enthält den Klassennamen. Gehört er zu einer anderen Klasse, wird er ignoriert. So können mehrere Klassen im selben WLAN sein, ohne sich zu stören. Gross-/Kleinschreibung und Leerzeichen sind dabei egal („INF3a“ = „inf 3A“).
 

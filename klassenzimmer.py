@@ -955,6 +955,10 @@ def main():
     parser.add_argument("--klasse", help="Name der Klasse, z.B. INF3a")
     parser.add_argument("--autostart", action="store_true",
                         help="gespeicherte Einstellungen benutzen, nicht nachfragen")
+    parser.add_argument("--speichern", action="store_true",
+                        help="mit --name/--role/--klasse: dauerhaft speichern und Autostart einschalten")
+    parser.add_argument("--kein-autostart", action="store_true",
+                        help="mit --speichern: Autostart NICHT einschalten")
     parser.add_argument("--port", type=int, default=0,
                         help="Port für direkte Nachrichten (Standard: 50506, im Testmodus zufällig)")
     parser.add_argument("--broadcast", default="255.255.255.255",
@@ -966,7 +970,9 @@ def main():
 
     # Testmodus: Name+Rolle auf der Kommandozeile -> nichts speichern,
     # mehrere Instanzen auf einem PC erlaubt.
-    test_mode = bool(args.name and args.role)
+    test_mode = bool(args.name and args.role) and not args.speichern
+    if args.speichern and not (args.name and args.role and args.klasse):
+        parser.error("--speichern braucht --name, --role und --klasse")
 
     if test_mode:
         store = None
@@ -982,6 +988,13 @@ def main():
             messagebox.showinfo("Klassenzimmer", "Die App läuft schon.")
             return
         store = Store()
+        if args.speichern:
+            # Einrichten ohne Startfenster (z.B. für Installations-Skripte)
+            store.set_profile(clean_text(args.name, MAX_NAME), args.role,
+                              clean_text(args.klasse, MAX_CLASS))
+            problem = set_autostart(not args.kein_autostart)
+            print(problem or "Gespeichert. Autostart: %s" % ("aus" if args.kein_autostart else "an"))
+            args.autostart = True             # jetzt ohne Startfenster weiter
         name = clean_text(store.get("name", ""), MAX_NAME)
         role = store.get("role") if store.get("role") in ROLES else None
         klasse = clean_text(store.get("klasse", ""), MAX_CLASS)

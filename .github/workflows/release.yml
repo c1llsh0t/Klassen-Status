@@ -86,7 +86,7 @@ jobs:
           make_latest: true
           files: out/*
           body: |
-            Anleitung für Installation und Autostart: siehe **INSTALLATION.md** im Repository.
+            Ausführliche Anleitung für Installation und Autostart (und ein Prompt, mit dem Claude alles installiert): siehe README auf der Startseite.
 
             **Windows:** `Klassenzimmer-Windows.exe` in einen festen Ordner legen und starten. *Weitere Informationen → Trotzdem ausführen*, bei der Firewall *Private Netzwerke → Zulassen*.
             **Mac (Apple-Chip):** `Klassenzimmer-Mac.zip` entpacken, App in *Programme* ziehen, öffnen, dann *Systemeinstellungen → Datenschutz & Sicherheit → Dennoch öffnen*. Lokales Netzwerk *Erlauben*.

@@ -118,7 +118,7 @@ Gespeichert wird hier:
 
 - **Nur im selben Netz:** Alle müssen im selben WLAN/LAN sein. Verschiedene Hotspots gehen nicht.
 - **Manche WLANs blockieren das:** Viele Schul- und Gäste-WLANs haben „Client Isolation“. Dann dürfen Geräte nicht direkt miteinander reden, und die App findet niemanden. Lösung: anderes WLAN oder ein eigener Router.
-- **Firewall:** Beim ersten Start muss man den Netzwerkzugriff erlauben. Unter Linux mit ufw: `sudo ufw allow 50505:50506/udp`. Details stehen in INSTALLATION.md.
+- **Firewall:** Beim ersten Start muss man den Netzwerkzugriff erlauben. Unter Linux mit ufw: `sudo ufw allow 50505:50506/udp`. Details stehen in der README.
 - **Nicht verschlüsselt:** Wer im selben WLAN ist, könnte mitlesen oder sich als jemand anderes ausgeben. Darum keine privaten Dinge in die Hilfeanfrage schreiben.
 - **Die Warteschlange ist nicht gespeichert:** Schliesst der Coach die App, sind offene Anfragen weg.
 - **Warnung beim ersten Start:** Windows und Mac warnen, weil die App nicht kostenpflichtig signiert ist. Das ist normal.

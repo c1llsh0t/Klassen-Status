@@ -97,6 +97,20 @@ Viele Schul- und Firmen-WLANs **filtern Broadcasts** zwischen den Geräten, lass
 
 Manche WLANs sperren auch **direkte** Verbindungen zwischen Geräten („Client Isolation“). Darum gehen `help`, `done` und `ack` direkt an den Empfänger **und** als Kopie an die Multicast-Gruppe. Die Kopie enthält das Feld `"to"` mit der `peer_id` des Empfängers. Alle anderen ignorieren sie. Kommen beide Kopien an, erkennt der Empfänger die zweite an der gleichen `id` als Duplikat (siehe unten). Ältere Versionen ignorieren das Feld `"to"` einfach.
 
+### Zusätzlich übers Internet (ab Version 2.3, TEIL 5b)
+
+Im Schul-WLAN BbcBYOD half auch Multicast nicht: Das WLAN trennt die Geräte **ganz** voneinander. Zwei Laptops im selben Raum, im selben Netz (`10.100.60.x`), Version 2.2 und Firewall offen, und trotzdem kam kein einziges Paket an, nicht einmal eine ARP-Antwort. Ins Internet kommt aber jeder, und zwar über Port 443 (alle anderen Ports sind dort zu).
+
+Darum verbindet sich die App zusätzlich mit einem öffentlichen **MQTT-Vermittler** (`public.cloud.shiftr.io`). MQTT funktioniert mit **Themen** (Publish/Subscribe): Wer ein Thema abonniert hat, bekommt alles, was jemand dorthin schickt.
+
+- **Verbindung:** WebSocket über TLS auf Port 443, wie eine Webseite. MQTT 3.1.1 ist einfach genug, um es mit der Standardbibliothek selbst zu schreiben (`Relay`): `CONNECT`, `SUBSCRIBE`, `PUBLISH`, `PINGREQ`.
+- **Themen:** `klassenzimmer/<aus dem Schlüssel>/alle` für Heartbeats und `bye`, und pro Person ein eigenes Thema für `help`, `done` und `ack` (`relay_topics`). Die Namen sind aus dem Schlüssel berechnet und verraten den Code nicht.
+- **Verschlüsselung:** Die Signatur schützt nur vor Fälschungen. Damit der Vermittler Namen und Texte nicht lesen kann, wird jedes Paket zusätzlich verschlüsselt (`seal`): HMAC-SHA256 als Schlüsselstrom im Zähler-Modus, mit einer neuen Zufallszahl pro Paket. Ob unterwegs etwas verändert wurde, prüft danach wie immer `decode()` über die Signatur.
+- **Seltener melden:** Übers Internet schickt jede App ihren Heartbeat nur alle 15 s statt alle 5 s (schont den kostenlosen Vermittler). Wer nur übers Internet zu hören ist, wird darum erst nach 50 s grau. Ein Neuer bekommt trotzdem sofort Antwort: Wer ihn zum ersten Mal hört, schickt ihm seinen Heartbeat direkt in sein Thema.
+- **Doppelt ist egal:** Hört man jemanden im WLAN **und** übers Internet, fällt die zweite Kopie bei der Duplikat-Erkennung weg (gleiche `id`).
+- **Erweiterungen (TEIL 8)** können über denselben Weg eigene Pakete schicken (`send_raw`/`listen_raw`): im WLAN mit dem Kopf `KZX` + Thema, übers Internet in einem eigenen MQTT-Thema. Die App liest diese Pakete nicht, die Erweiterung verschlüsselt sie selbst.
+- **Ein Thread für den Socket:** Ein TLS-Socket soll nicht gleichzeitig von zwei Threads benutzt werden. Darum legen die anderen Threads ihre Pakete nur in eine Warteschlange, und der Relay-Thread sendet, empfängt und pingt. Bricht die Verbindung ab, verbindet er neu (Wartezeit 1, 2, 4 … höchstens 60 s).
+
 ### Zwei Sockets
 
 ```python

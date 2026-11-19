@@ -1,6 +1,6 @@
 # Klassenzimmer
 
-Eine Peer-to-Peer-App fürs Klassenzimmer: Alle Rechner im selben WLAN/LAN sehen sich gegenseitig, **ohne Server**. Schüler fragen den Coach per Knopfdruck um Hilfe, und der Coach sieht alle Anfragen in einer Warteschlange.
+Eine Peer-to-Peer-App fürs Klassenzimmer: Alle Rechner im selben WLAN/LAN sehen sich gegenseitig, **ohne eigenen Server**. Trennt das WLAN die Geräte voneinander (wie viele Schul-WLANs), geht es ab Version 2.3 automatisch verschlüsselt übers Internet. Schüler fragen den Coach per Knopfdruck um Hilfe, und der Coach sieht alle Anfragen in einer Warteschlange.
 
 - 🔑 **Beitrittscode:** Der Coach erzeugt einen Code (z.B. `K7Q-M3X`), die Schüler geben ihn ein. Nur wer den Code kennt, gehört zur Klasse.
 - 🟢 online · 🟡 nicht stören · ⚪ offline (20 Sekunden nichts gehört)
@@ -295,8 +295,20 @@ Das Fenster-X versteckt das Fenster nur, die App läuft klein weiter. **Beenden*
 2. Sind alle im **selben WLAN**?
 3. Ist die **Firewall** freigegeben? Siehe oben beim jeweiligen System.
 4. Stimmt die **Uhrzeit** am Computer ungefähr? Mehr als 10 Minuten falsch geht nicht, das ist ein Schutz gegen aufgezeichnete Nachrichten.
-5. Haben alle **mindestens Version 2.2**? Viele Schul-WLANs filtern Broadcasts zwischen Geräten. Ab 2.2 sucht die App zusätzlich per Multicast, das kommt dort meistens durch. Aktualisieren: Installer nochmal ausführen bzw. neue Datei aus den Releases holen.
-6. Manche Schul- und Gäste-WLANs sperren auch Multicast zwischen Geräten („Client Isolation“). Zum Testen zwei Laptops an denselben Handy-Hotspot hängen. Klappt es dort, liegt es am WLAN.
+5. Haben alle **mindestens Version 2.3**? Viele Schul-WLANs trennen die Geräte ganz voneinander („Client-Isolation“, z. B. BbcBYOD): kein Broadcast, kein Multicast, nicht einmal ein Ping. Ab 2.3 geht die App dann automatisch übers Internet (siehe unten). Aktualisieren: Installer nochmal ausführen bzw. neue Datei aus den Releases holen.
+6. Kommt die App ins Internet? Wenn niemand gefunden wird, steht im Fenster „Internet-Weg: keine Verbindung“. Dann blockt etwas die Verbindung zu `public.cloud.shiftr.io` (Port 443).
+
+### Übers Internet (ab Version 2.3)
+
+Die App sucht zuerst im WLAN. Zusätzlich verbindet sie sich mit einem kostenlosen, öffentlichen Vermittler (MQTT über WebSocket bei `public.cloud.shiftr.io`, Port 443 wie normale Webseiten). Über ihn findet sich die Klasse auch dann, wenn das WLAN die Geräte voneinander trennt.
+
+- **Verschlüsselt:** Alles ist mit dem Beitrittscode verschlüsselt und signiert. Der Vermittler sieht weder Namen noch Hilfetexte noch den Code, nur Datensalat.
+- **Ausschalten:** mit `--ohne-internet` starten oder `KLASSENZIMMER_INTERNET=aus` setzen. Dann geht es nur im WLAN.
+- **Anderer Vermittler:** `KLASSENZIMMER_INTERNET=wss://benutzer:passwort@host/pfad` (jeder MQTT-Server mit WebSocket). Alle in der Klasse müssen denselben benutzen.
+
+### Erweiterungen (ab Version 2.3)
+
+Liegt im Einstellungs-Ordner (neben `einstellungen.json`) eine Datei `erweiterung.py`, lädt die App sie beim Start. Eine Erweiterung kann eigene Knöpfe und Textzeilen ins Fenster, ins Menü der kleinen Leiste und ins Omarchy-Panel bringen und eigene Nachrichten an die anderen schicken. Wie das geht, steht in `klassenzimmer.py` bei **TEIL 8**. Achtung: Eine Erweiterung ist Python-Code und darf alles, was die App darf. Nur Dateien aus einer Quelle benutzen, der man vertraut.
 
 ---
 

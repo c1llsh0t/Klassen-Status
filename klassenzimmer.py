@@ -31,11 +31,14 @@ Aufbau dieser Datei (in dieser Reihenfolge lesen!):
   TEIL 3  Autostart                    – beim Anmelden starten
   TEIL 4  Steuerung und Waybar         – "nur einmal starten", Waybar-Modul
   TEIL 5  Netzwerk                     – Broadcast, Heartbeat, ACK, Wiederholung
+  TEIL 5b Internet-Weg                 – falls das WLAN die Geräte voneinander trennt
   TEIL 6  Oberfläche                   – grosses Fenster und kleine Leiste
   TEIL 7  Start                        – Kommandozeile, Startfenster, main()
+  TEIL 8  Erweiterungen                – eigene Knöpfe aus erweiterung.py
 """
 
 import argparse
+import base64
 import hashlib
 import hmac
 import json
@@ -50,12 +53,14 @@ import secrets
 import shlex
 import shutil
 import socket
+import ssl
 import subprocess
 import sys
 import threading
 import time
 import uuid
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 try:
     import tkinter as tk
@@ -69,7 +74,7 @@ except ImportError:
         sys.exit(1)
     raise
 
-APP_VERSION = "2.2"
+APP_VERSION = "2.3"
 
 
 # ===========================================================================
@@ -88,6 +93,16 @@ DIRECT_PORT = 50506           # hier kommen direkte Nachrichten an (help, done, 
 # Zusätzlich zum Broadcast: Viele Schul-WLANs filtern Broadcasts zwischen Geräten,
 # lassen Multicast (wie bei Druckern und Chromecast) aber durch.
 MULTICAST_GROUP = "239.255.50.55"
+# Und wenn das WLAN die Geräte ganz voneinander trennt (Client-Isolation, z.B. im
+# Schul-WLAN BbcBYOD), geht gar nichts direkt, auch kein Multicast. Dann zusätzlich
+# übers Internet: über einen öffentlichen MQTT-Vermittler, per WebSocket auf Port 443
+# wie eine normale Webseite. Alles ist mit dem Beitrittscode verschlüsselt und
+# signiert, der Vermittler sieht nur Datensalat (siehe TEIL 5b).
+RELAY_URL = "wss://public:public@public.cloud.shiftr.io/"
+RELAY_IP = "internet"         # "Adresse" von jemandem, den wir nur übers Internet hören
+RELAY_HEARTBEAT = 15.0        # übers Internet seltener "Ich bin da" (schont den Vermittler)
+OFFLINE_AFTER_INTERNET = 50.0 # ... und darum später grau
+RAW_MAGIC = b"KZX"            # rohe Pakete von Erweiterungen (TEIL 8), nicht signiert
                               # Fest, damit man in der Firewall nur 50505-50506 öffnen muss.
 CONTROL_PORT = int(os.environ.get("KLASSENZIMMER_STEUERPORT", 50507))
                               # TCP auf 127.0.0.1: "läuft schon?" + Befehle (siehe TEIL 4)
@@ -253,6 +268,65 @@ def decode(data, key):
     else:
         ok = False
     return msg if ok else None
+
+
+# Fürs Internet zusätzlich verschlüsseln: Die Signatur (mac) schützt nur vor
+# Fälschungen, Name und Hilfetext wären sonst lesbar. Verfahren: HMAC-SHA256 als
+# Schlüsselstrom (Zähler-Modus), jedes Paket mit eigener Zufallszahl (nonce).
+# Ob nichts verändert wurde, prüft danach decode() über die Signatur.
+SEAL_MAGIC = b"KZ1"
+SEAL_NONCE = 16
+
+
+def _sub_key(key, purpose):
+    return hmac.new(key, purpose, hashlib.sha256).digest()
+
+
+def _keystream(key, nonce, n):
+    k = _sub_key(key, b"internet-verschluesselung")
+    out = bytearray()
+    counter = 0
+    while len(out) < n:
+        out += hmac.new(k, nonce + counter.to_bytes(4, "big"), hashlib.sha256).digest()
+        counter += 1
+    return bytes(out[:n])
+
+
+def _xor(data, stream):
+    return (int.from_bytes(data, "big") ^ int.from_bytes(stream, "big")).to_bytes(len(data), "big")
+
+
+def seal(data, key):
+    """Signierte Bytes -> verschlüsselte Bytes fürs Internet."""
+    nonce = os.urandom(SEAL_NONCE)
+    return SEAL_MAGIC + nonce + _xor(data, _keystream(key, nonce, len(data)))
+
+
+def unseal(blob, key):
+    """Gegenstück zu seal(). None, wenn es kein Paket von uns ist."""
+    head = len(SEAL_MAGIC) + SEAL_NONCE
+    if not isinstance(blob, bytes) or not blob.startswith(SEAL_MAGIC) or not head < len(blob) <= head + MAX_PACKET:
+        return None
+    nonce, body = blob[len(SEAL_MAGIC):head], blob[head:]
+    return _xor(body, _keystream(key, nonce, len(body)))
+
+
+RAW_TOPIC = re.compile(r"[a-z0-9_-]{1,40}")
+
+
+def raw_relay_topic(topic, reverse=False):
+    """Thema einer Erweiterung <-> MQTT-Thema. reverse: MQTT-Thema -> Thema (oder None)."""
+    prefix = "klassenzimmer-x/"
+    if reverse:
+        return topic[len(prefix):] if topic.startswith(prefix) else None
+    return prefix + topic
+
+
+def relay_topics(key, peer_id):
+    """MQTT-Themen: eins für alle in der Klasse, eins nur für mich.
+    Aus dem Schlüssel berechnet, damit sie den Code nicht verraten."""
+    root = "klassenzimmer/" + _sub_key(key, b"internet-thema").hex()[:24]
+    return root + "/alle", root + "/" + hmac.new(key, peer_id.encode(), hashlib.sha256).hexdigest()[:16]
 
 
 # ===========================================================================
@@ -445,7 +519,7 @@ def set_autostart(enabled):
 
 COMMANDS = ("show", "toggle", "status", "quit")
 # Befehle mit Text dahinter, z.B. "hilfe Aufgabe 3" (für Leisten-Panels wie Omarchy)
-ARG_COMMANDS = ("hilfe", "erledigt", "entfernen")
+ARG_COMMANDS = ("hilfe", "erledigt", "entfernen", "erweiterung")
 MAX_CONTROL = 1024                 # Bytes pro Steuerbefehl
 
 
@@ -676,11 +750,16 @@ def setup_waybar():
 #   ("sending", id, n)  Nachricht wird gesendet, Versuch n
 #   ("acked", id, von)  Nachricht wurde bestätigt
 #   ("failed", id)      nach 5 Versuchen keine Bestätigung
+#   ("internet", bool)  Internet-Weg verbunden / getrennt (TEIL 5b)
 #   ("log", text)       Info für die Konsole
+#
+# Mit relay (TEIL 5b) geht zusätzlich alles übers Internet. Wen wir nur dort
+# hören, hat die "Adresse" (RELAY_IP, 0). Doppelt ankommende Nachrichten
+# (WLAN und Internet) fallen bei der Duplikat-Erkennung (seen) weg.
 
 class Network:
     def __init__(self, me, events, key, broadcast_addr="255.255.255.255", loss=0.0, port=0,
-                 port_fallback=False, multicast=True):
+                 port_fallback=False, multicast=True, relay=None):
         self.me = me                      # dict: peer_id, name, role, status, klasse
         self.events = events
         self.key = key                    # aus dem Beitrittscode (derive_key)
@@ -690,6 +769,10 @@ class Network:
         self.port_fallback = port_fallback  # Port besetzt -> irgendeinen freien nehmen
         self.multicast = multicast        # zusätzlich per Multicast senden und hören
         self.mcast = False                # Multicast klappt hier wirklich (nach start)
+        self.relay = relay                # Internet-Weg (TEIL 5b) oder None
+        self.topic_all = self.topic_me = None
+        self.raw_listeners = {}           # Erweiterungen: Thema -> fn(daten)
+        self.next_relay_heartbeat = 0.0
         self.lock = threading.Lock()      # schützt me, pending, seen, known
         self.running = False
         self.pending = {}                 # msg_id -> {msg, addr, tries, next}
@@ -748,6 +831,10 @@ class Network:
         self.me["port"] = self.usock.getsockname()[1]
 
         self.running = True
+        if self.relay:
+            self.topic_all, self.topic_me = relay_topics(self.key, self.me["peer_id"])
+            self.relay.start([self.topic_all, self.topic_me], self._from_relay, self._relay_state,
+                             lambda text: self.events.put(("log", text)))
         for target, args in ((self._receive_loop, (self.bsock,)),
                              (self._receive_loop, (self.usock,)),
                              (self._timer_loop, ())):
@@ -762,12 +849,15 @@ class Network:
         self.running = False
         self.bsock.close()
         self.usock.close()
+        if self.relay:
+            self.relay.stop()            # schickt vorher noch das "bye"
 
     # ---- Für die Oberfläche ----------------------------------------------
     def set_status(self, status):
         with self.lock:
             self.me["status"] = status
             self.next_heartbeat = 0.0    # sofort melden
+            self.next_relay_heartbeat = 0.0
 
     def send_help(self, ip, port, text, to=None):
         msg = make_help(self.me, text, to)
@@ -844,6 +934,9 @@ class Network:
     def _handle(self, data, addr):
         if self.loss and random.random() < self.loss:
             return                                   # Paketverlust simulieren
+        if data.startswith(RAW_MAGIC):
+            self._handle_raw(data)                   # Paket einer Erweiterung
+            return
         msg = decode(data, self.key)
         if msg is None or msg["from"] == self.me["peer_id"]:
             return               # ungültig, andere Klasse (anderer Code) oder von mir
@@ -869,7 +962,10 @@ class Network:
                 is_new = key not in self.known
                 self.known.add(key)
                 hb = make_heartbeat(self.me) if is_new else None
-            if hb:
+            if hb and ip == RELAY_IP:
+                hb["to"] = msg["from"]        # übers Internet nur an den Neuen
+                self._publish(hb)
+            elif hb:
                 self._send(hb, (ip, msg["port"]))
                 if self.mcast:
                     self._send(hb, (MULTICAST_GROUP, DISCOVERY_PORT))
@@ -898,6 +994,9 @@ class Network:
 
     # ---- Hilfsfunktionen ------------------------------------------------------
     def _send(self, msg, addr):
+        if addr[0] == RELAY_IP:
+            self._publish(msg)
+            return
         try:
             self.usock.sendto(encode(msg, self.key), addr)
         except OSError as e:
@@ -908,13 +1007,83 @@ class Network:
         """Direkt an eine Adresse und (mit Empfänger) als Kopie per Multicast,
         falls das WLAN direkte Verbindungen zwischen Geräten sperrt."""
         self._send(msg, addr)
-        if self.mcast and msg.get("to"):
-            self._send(msg, (MULTICAST_GROUP, DISCOVERY_PORT))
+        if msg.get("to") and addr[0] != RELAY_IP:
+            if self.mcast:
+                self._send(msg, (MULTICAST_GROUP, DISCOVERY_PORT))
+            self._publish(msg)                   # und übers Internet
 
     def _broadcast(self, msg):
         self._send(msg, (self.broadcast_addr, DISCOVERY_PORT))
         if self.mcast:
             self._send(msg, (MULTICAST_GROUP, DISCOVERY_PORT))
+        if self.relay:
+            if msg["type"] == "heartbeat":
+                with self.lock:
+                    due = now() >= self.next_relay_heartbeat
+                    if due:
+                        self.next_relay_heartbeat = now() + RELAY_HEARTBEAT
+                if not due:
+                    return
+            self._publish(msg)
+
+    # ---- Internet-Weg (TEIL 5b) ------------------------------------------------
+    def _publish(self, msg):
+        """Verschlüsselt übers Internet: direkte Nachrichten ins Thema des
+        Empfängers, alles andere ins Thema der ganzen Klasse."""
+        if not self.relay or not self.running:
+            return
+        topic = (relay_topics(self.key, msg["to"])[1] if msg.get("to") else self.topic_all)
+        self.relay.publish(topic, seal(encode(msg, self.key), self.key))
+
+    def _from_relay(self, topic, payload):
+        fn = self.raw_listeners.get(raw_relay_topic(topic, reverse=True))
+        if fn:
+            fn(payload)
+            return
+        data = unseal(payload, self.key)
+        if data is not None and self.running:
+            self._handle(data, (RELAY_IP, 0))
+
+    def _relay_state(self, connected):
+        if connected:
+            with self.lock:                      # gleich melden, wer wir sind
+                self.next_heartbeat = self.next_relay_heartbeat = 0.0
+        self.events.put(("internet", connected))
+
+    # ---- Rohe Pakete für Erweiterungen (TEIL 8) -----------------------------------
+    # Format im WLAN: "KZX" + Länge des Themas (1 Byte) + Thema + Daten.
+    # Übers Internet: Daten im MQTT-Thema raw_relay_topic(thema).
+    # Die App prüft hier nichts: Verschlüsseln und Signieren macht die Erweiterung.
+    def listen_raw(self, topic, fn):
+        """fn(daten) für jedes Paket mit diesem Thema (läuft im Netzwerk-Thread)."""
+        if not RAW_TOPIC.fullmatch(topic):
+            raise ValueError("Thema: 1-40 Zeichen a-z, 0-9, - oder _")
+        self.raw_listeners[topic] = fn
+        if self.relay:
+            self.relay.add_topic(raw_relay_topic(topic))
+
+    def send_raw(self, topic, data):
+        """An alle: Broadcast, Multicast und Internet."""
+        if not RAW_TOPIC.fullmatch(topic) or len(data) > MAX_PACKET:
+            raise ValueError("Thema ungültig oder Paket zu gross")
+        packet = RAW_MAGIC + bytes([len(topic)]) + topic.encode() + data
+        for addr in [(self.broadcast_addr, DISCOVERY_PORT)] + \
+                    ([(MULTICAST_GROUP, DISCOVERY_PORT)] if self.mcast else []):
+            try:
+                self.usock.sendto(packet, addr)
+            except OSError as e:
+                if self.running:
+                    self.events.put(("log", "Senden an %s fehlgeschlagen: %s" % (addr[0], e)))
+        if self.relay and self.running:
+            self.relay.publish(raw_relay_topic(topic), data)
+
+    def _handle_raw(self, data):
+        n = data[len(RAW_MAGIC)] if len(data) > len(RAW_MAGIC) else 0
+        start = len(RAW_MAGIC) + 1
+        topic = data[start:start + n].decode("ascii", "replace")
+        fn = self.raw_listeners.get(topic)
+        if fn and len(data) > start + n:
+            fn(data[start + n:])
 
     def _forget_old_ids(self):
         limit = now() - SEEN_KEEP
@@ -922,6 +1091,311 @@ class Network:
             for msg_id, t in list(self.seen.items()):
                 if t < limit:
                     del self.seen[msg_id]
+
+
+# ===========================================================================
+# TEIL 5b: Internet-Weg – falls das WLAN die Geräte voneinander trennt
+# ===========================================================================
+# Manche WLANs (Schulen, Firmen, Hotels) lassen Geräte nicht miteinander reden
+# ("Client-Isolation"): kein Broadcast, kein Multicast, nicht einmal ein Ping.
+# Ins Internet kommt aber jeder. Darum verbindet sich die App zusätzlich mit
+# einem öffentlichen MQTT-Vermittler (Publish/Subscribe):
+#
+#     App A --publish("…/alle", Paket)--> Vermittler --> alle, die "…/alle" abonniert haben
+#
+# - Verbindung: WebSocket über TLS auf Port 443 (wie https), das lassen auch
+#   strenge Firewalls durch. MQTT 3.1.1 ist einfach genug für die
+#   Standardbibliothek: CONNECT, SUBSCRIBE, PUBLISH, PINGREQ.
+# - Datenschutz: Jedes Paket ist mit dem Beitrittscode verschlüsselt (seal) und
+#   signiert (encode). Die Themen sind aus dem Code berechnet (relay_topics).
+#   Der Vermittler sieht nur, dass jemand Datensalat schickt.
+# - Ein einziger Thread macht alles mit dem Socket (lesen, senden, Ping).
+#   Andere Threads legen ihre Pakete nur in eine Warteschlange.
+# - Bricht die Verbindung ab: neu verbinden, Wartezeit 1, 2, 4 … höchstens 60 s.
+
+CA_FILES = ("/etc/ssl/certs/ca-certificates.crt",   # Debian, Ubuntu, Arch
+            "/etc/pki/tls/certs/ca-bundle.crt",     # Fedora
+            "/etc/ssl/ca-bundle.pem",               # openSUSE
+            "/etc/ssl/cert.pem")                    # macOS, Alpine
+
+
+def tls_context():
+    """TLS mit Zertifikatsprüfung. Eine mit PyInstaller gebaute App sucht die
+    Zertifikate oft am Ort des Build-Rechners, darum die üblichen Orte dazu."""
+    ctx = ssl.create_default_context()
+    for path in CA_FILES:
+        if os.path.isfile(path):
+            try:
+                ctx.load_verify_locations(path)
+                break
+            except (OSError, ssl.SSLError):
+                pass
+    return ctx
+
+
+def mqtt_string(text):
+    data = text.encode("utf-8") if isinstance(text, str) else text
+    return struct.pack("!H", len(data)) + data
+
+
+def mqtt_packet(first, body):
+    """Feste Kopfzeile: Typ-Byte + Länge (7 Bit pro Byte, oberstes Bit = "es geht weiter")."""
+    n, length = len(body), b""
+    while True:
+        n, digit = divmod(n, 128)
+        length += bytes([digit | (0x80 if n else 0)])
+        if not n:
+            return bytes([first]) + length + body
+
+
+def mqtt_parse(buf):
+    """Ein ganzes MQTT-Paket vorne aus buf: (typ_byte, inhalt, rest) oder None."""
+    n, mult, i = 0, 1, 1
+    while True:
+        if i >= len(buf):
+            return None
+        digit = buf[i]
+        n += (digit & 0x7F) * mult
+        mult *= 128
+        i += 1
+        if not digit & 0x80:
+            break
+        if i > 4:
+            raise ValueError("MQTT-Länge kaputt")
+    if len(buf) < i + n:
+        return None
+    return buf[0], buf[i:i + n], buf[i + n:]
+
+
+def ws_frame(data, opcode=0x2):
+    """WebSocket-Frame vom Client: immer maskiert (so will es RFC 6455)."""
+    n = len(data)
+    if n < 126:
+        head = bytes([0x80 | opcode, 0x80 | n])
+    elif n < 65536:
+        head = bytes([0x80 | opcode, 0x80 | 126]) + struct.pack("!H", n)
+    else:
+        head = bytes([0x80 | opcode, 0x80 | 127]) + struct.pack("!Q", n)
+    mask = os.urandom(4)
+    return head + mask + _xor(data, (mask * (n // 4 + 1))[:n])
+
+
+def ws_parse(buf):
+    """Ein ganzes WebSocket-Frame vorne aus buf: (opcode, daten, rest) oder None."""
+    if len(buf) < 2:
+        return None
+    op, n, i = buf[0] & 0x0F, buf[1] & 0x7F, 2
+    if n == 126:
+        if len(buf) < 4:
+            return None
+        n, i = struct.unpack("!H", buf[2:4])[0], 4
+    elif n == 127:
+        if len(buf) < 10:
+            return None
+        n, i = struct.unpack("!Q", buf[2:10])[0], 10
+    if n > 1 << 20:
+        raise ValueError("WebSocket-Frame zu gross")
+    mask = None
+    if buf[1] & 0x80:
+        mask, i = buf[i:i + 4], i + 4
+    if len(buf) < i + n:
+        return None
+    data = buf[i:i + n]
+    if mask:
+        data = _xor(data, (mask * (n // 4 + 1))[:n])
+    return op, data, buf[i + n:]
+
+
+class Relay:
+    """MQTT über WebSocket. url z.B. wss://benutzer:passwort@host/pfad
+    (ws:// ohne Verschlüsselung nur für Tests und eigene Vermittler im LAN)"""
+
+    def __init__(self, url=RELAY_URL, keepalive=30):
+        u = urlsplit(url)
+        if u.scheme not in ("wss", "ws") or not u.hostname:
+            raise ValueError("Internet-Adresse muss mit wss:// anfangen: %r" % url)
+        self.tls = u.scheme == "wss"
+        self.host, self.port = u.hostname, u.port or (443 if self.tls else 80)
+        self.path = (u.path or "/") + ("?" + u.query if u.query else "")
+        self.user = unquote(u.username) if u.username else None
+        self.password = unquote(u.password) if u.password else None
+        self.keepalive = keepalive
+        self.outbox = queue.Queue(maxsize=500)
+        self.running = False
+        self.connected = False
+        self.thread = None
+        self.topics = []
+        self.resubscribe = False          # neue Themen dazugekommen -> nochmal SUBSCRIBE
+        self.packet_id = 0
+
+    # ---- für Network -----------------------------------------------------------
+    def start(self, topics, on_message, on_state=None, log=print):
+        self.topics, self.on_message = list(topics) + self.topics, on_message
+        self.on_state, self.log = on_state or (lambda connected: None), log
+        self.running = True
+        self.thread = threading.Thread(target=self._loop, daemon=True)
+        self.thread.start()
+
+    def add_topic(self, topic):
+        """Später noch ein Thema abonnieren (z.B. für eine Erweiterung)."""
+        if topic not in self.topics:
+            self.topics.append(topic)
+            self.resubscribe = True
+
+    def publish(self, topic, payload):
+        """Nur in die Warteschlange (der Relay-Thread schickt es).
+        Ohne Verbindung wird verworfen, Heartbeats und Wiederholungen kommen ja nach."""
+        if not self.connected:
+            return False
+        try:
+            self.outbox.put_nowait(mqtt_packet(0x30, mqtt_string(topic) + payload))
+            return True
+        except queue.Full:
+            return False
+
+    def stop(self, wait=1.5):
+        """Warteschlange noch leeren (z.B. das "bye"), dann trennen."""
+        self.running = False
+        if self.thread and self.thread is not threading.current_thread():
+            self.thread.join(wait)
+
+    # ---- Relay-Thread ----------------------------------------------------------
+    def _loop(self):
+        wait = 1
+        while self.running:
+            sock = None
+            try:
+                sock = self._connect()
+                wait = 1
+                self._session(sock)
+            except Exception as e:       # auch kaputte Pakete: neu verbinden
+                if self.running:
+                    self.log("Internet: %s" % (str(e) or type(e).__name__))
+            finally:
+                if self.connected:
+                    self.connected = False
+                    self.on_state(False)
+                if sock:
+                    try:
+                        sock.close()
+                    except OSError:
+                        pass
+            end = time.monotonic() + wait
+            while self.running and time.monotonic() < end:
+                time.sleep(0.2)
+            wait = min(wait * 2, 60)
+
+    def _connect(self):
+        raw = socket.create_connection((self.host, self.port), timeout=10)
+        try:
+            sock = tls_context().wrap_socket(raw, server_hostname=self.host) if self.tls else raw
+        except OSError:
+            raw.close()
+            raise
+        key = base64.b64encode(os.urandom(16)).decode()
+        sock.sendall(("GET %s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                      "Sec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n"
+                      "Sec-WebSocket-Protocol: mqtt\r\n\r\n" % (self.path, self.host, key)).encode())
+        head = b""
+        while b"\r\n\r\n" not in head:
+            chunk = sock.recv(4096)
+            if not chunk or len(head) > 16384:
+                sock.close()
+                raise OSError("keine WebSocket-Antwort")
+            head += chunk
+        head, self.rbuf = head.split(b"\r\n\r\n", 1)
+        status = head.split(b"\r\n")[0].decode("latin-1")
+        if status.split(" ")[1:2] != ["101"]:
+            sock.close()
+            raise OSError("WebSocket abgelehnt: %s" % status)
+        self.mbuf = b""
+        flags = 0x02 | (0x80 if self.user else 0) | (0x40 if self.password else 0)   # 0x02 = clean session
+        body = (mqtt_string("MQTT") + bytes([4, flags]) + struct.pack("!H", self.keepalive)
+                + mqtt_string("kz-" + os.urandom(8).hex()))
+        for extra in (self.user, self.password):
+            if extra:
+                body += mqtt_string(extra)
+        sock.sendall(ws_frame(mqtt_packet(0x10, body)))                  # CONNECT
+        return sock
+
+    def _session(self, sock):
+        sock.settimeout(0.1)
+        last_rx = last_ping = time.monotonic()
+        self.got_connack = False
+        while True:
+            if self.got_connack and self.resubscribe:
+                self._subscribe(sock)
+            # 1. Senden, was in der Warteschlange liegt
+            while True:
+                try:
+                    packet = self.outbox.get_nowait()
+                except queue.Empty:
+                    break
+                sock.sendall(ws_frame(packet))
+            if not self.running:
+                sock.sendall(ws_frame(mqtt_packet(0xE0, b"")))           # DISCONNECT
+                return
+            # 2. Lebenszeichen, damit der Vermittler (und jedes NAT) die Verbindung offen hält
+            t = time.monotonic()
+            if t - last_ping > self.keepalive / 2:
+                sock.sendall(ws_frame(mqtt_packet(0xC0, b"")))           # PINGREQ
+                last_ping = t
+            if t - last_rx > self.keepalive * 1.5:
+                raise OSError("keine Antwort vom Vermittler")
+            # 3. Empfangen
+            try:
+                chunk = sock.recv(65536)
+            except socket.timeout:
+                continue
+            if not chunk:
+                raise OSError("Verbindung beendet")
+            last_rx = time.monotonic()
+            self.rbuf += chunk
+            while True:
+                frame = ws_parse(self.rbuf)
+                if not frame:
+                    break
+                op, data, self.rbuf = frame
+                if op == 0x8:
+                    raise OSError("Vermittler hat die Verbindung geschlossen")
+                if op == 0x9:
+                    sock.sendall(ws_frame(data, opcode=0xA))             # Ping -> Pong
+                elif op in (0x0, 0x1, 0x2):
+                    self.mbuf += data
+            while True:
+                packet = mqtt_parse(self.mbuf)
+                if not packet:
+                    break
+                first, body, self.mbuf = packet
+                self._on_packet(sock, first, body)
+
+    def _subscribe(self, sock):
+        self.resubscribe = False
+        self.packet_id = self.packet_id % 65535 + 1
+        filters = b"".join(mqtt_string(t) + b"\x00" for t in list(self.topics))  # QoS 0
+        sock.sendall(ws_frame(mqtt_packet(0x82, struct.pack("!H", self.packet_id) + filters)))
+
+    def _on_packet(self, sock, first, body):
+        kind = first >> 4
+        if kind == 2:                                                     # CONNACK
+            if len(body) < 2 or body[1] != 0:
+                raise OSError("Vermittler lehnt Anmeldung ab (Code %s)" % (body[1:2].hex() or "?"))
+            self.got_connack = True
+            self._subscribe(sock)
+        elif kind == 9:                                                   # SUBACK
+            if not self.connected:
+                self.connected = True
+                self.log("Internet verbunden (%s)" % self.host)
+                self.on_state(True)
+        elif kind == 3 and self.connected:                                # PUBLISH
+            qos = (first >> 1) & 3
+            n = struct.unpack("!H", body[:2])[0]
+            topic = body[2:2 + n].decode("utf-8", "replace")
+            payload = body[2 + n + (2 if qos else 0):]
+            try:
+                self.on_message(topic, payload)
+            except Exception as e:      # ein Paket darf nie alles stoppen
+                self.log("Fehler bei Internet-Paket: %s" % e)
 
 
 # ===========================================================================
@@ -1012,10 +1486,18 @@ class MiniBar:
                     padx=6, pady=1).pack(side="left", padx=(4, 0))
 
         menu = tk.Menu(w, tearoff=0)
-        menu.add_command(label="Fenster öffnen", command=app.show_window)
-        menu.add_command(label="Status wechseln", command=app.toggle_status)
-        menu.add_separator()
-        menu.add_command(label="Beenden", command=app.quit)
+
+        def fill_menu():                         # bei jedem Öffnen neu (Erweiterung, TEIL 8)
+            menu.delete(0, "end")
+            menu.add_command(label="Fenster öffnen", command=app.show_window)
+            menu.add_command(label="Status wechseln", command=app.toggle_status)
+            if app.ext_buttons:
+                menu.add_separator()
+                for button_id, text, fn in app.ext_buttons:
+                    menu.add_command(label=text, command=lambda f=fn: app.ext_call(f))
+            menu.add_separator()
+            menu.add_command(label="Beenden", command=app.quit)
+        menu.configure(postcommand=fill_menu)
         for widget in (w, inner, grip, self.dot, name, self.action):
             widget.bind("<Button-3>", lambda e: menu.tk_popup(e.x_root, e.y_root))
             widget.bind("<Button-2>", lambda e: menu.tk_popup(e.x_root, e.y_root))  # Mac
@@ -1067,6 +1549,11 @@ class App:
         self.last_waybar = None
         self.last_state = None
         self.request_info = ""         # z.B. "Kein Coach online."
+        # Internet-Weg: None = aus, sonst True/False = verbunden/getrennt
+        self.internet = None if net.relay is None else False
+        self.extension = None          # Name der geladenen Erweiterung (TEIL 8)
+        self.ext_buttons = []          # [(id, text, fn)]
+        self.ext_info = []
 
         self.peers = {}                # peer_id -> {name, role, status, ip, port, last_seen}
         self.queue = []                # Coach: offene Anfragen, älteste zuerst
@@ -1097,7 +1584,7 @@ class App:
 
     # ---- Aufbau -------------------------------------------------------------
     def _build(self):
-        top = tk.Frame(self.root, bg=BG, padx=12, pady=10)
+        top = self.top_frame = tk.Frame(self.root, bg=BG, padx=12, pady=10)
         top.pack(fill="x")
         info = tk.Frame(top, bg=BG)
         info.pack(side="left")
@@ -1135,6 +1622,9 @@ class App:
         self.canvas.pack(side="left", fill="both", expand=True)
         bar.pack(side="right", fill="y")
 
+        # Knöpfe einer Erweiterung (TEIL 8), erst sichtbar, wenn es welche gibt
+        self.ext_frame = tk.Frame(self.root, bg=BG, padx=12, pady=6)
+
         ttk.Separator(self.root).pack(fill="x")
         bottom = tk.Frame(self.root, bg=BG, padx=12, pady=10)
         bottom.pack(fill="x")
@@ -1143,6 +1633,47 @@ class App:
         else:
             self._build_coach(bottom)
         self._render_peers()
+
+    # ---- Erweiterung (TEIL 8) ---------------------------------------------------
+    def ext_add_button(self, button_id, text, fn):
+        self.ext_buttons = [b for b in self.ext_buttons if b[0] != button_id] + [(button_id, text, fn)]
+        self._render_ext()
+
+    def ext_set_info(self, lines):
+        if lines != self.ext_info:
+            self.ext_info = lines
+            self._render_ext()
+
+    def ext_call(self, fn, *args):
+        try:
+            fn(*args)
+        except Exception as e:                   # Fehler der Erweiterung: App läuft weiter
+            print("Fehler in der Erweiterung: %s: %s" % (type(e).__name__, e))
+
+    def ext_click(self, button_id):
+        for b in self.ext_buttons:
+            if b[0] == button_id:
+                self.ext_call(b[2])
+
+    def _render_ext(self):
+        for w in self.ext_frame.winfo_children():
+            w.destroy()
+        if not (self.ext_buttons or self.ext_info):
+            self.ext_frame.pack_forget()
+            return
+        if not self.ext_frame.winfo_ismapped():
+            self.ext_frame.pack(fill="x", after=self.top_frame)   # gleich unter dem Kopf
+        for line in self.ext_info:
+            tk.Label(self.ext_frame, text=line, bg=BG, fg="#b45309", anchor="w", justify="left",
+                     wraplength=380).pack(fill="x")
+        row = tk.Frame(self.ext_frame, bg=BG)
+        row.pack(fill="x", pady=(4, 0))
+        for i, (button_id, text, fn) in enumerate(self.ext_buttons):
+            ColorButton(row, text, lambda f=fn: self.ext_call(f), bg="#eeeeee", hover="#e0e0e0",
+                        padx=8, pady=3).grid(row=i // 3, column=i % 3, sticky="we", padx=2, pady=2)
+        for c in range(3):
+            row.grid_columnconfigure(c, weight=1)
+        self._update_small_views()
 
     def _build_student(self, parent):
         tk.Label(parent, text="Frage (optional):", bg=BG, anchor="w").pack(fill="x")
@@ -1299,11 +1830,18 @@ class App:
                         self.mark_done(arg)
                     elif ev[1] == "entfernen":
                         self.remove_peer(arg, ask=False)
+                    elif ev[1] == "erweiterung":
+                        self.ext_click(arg)
                     else:
                         {"show": self.show_window, "toggle": self.toggle_window,
                          "status": self.toggle_status, "quit": self.quit}[ev[1]]()
                     if ev[1] == "quit":
                         return
+                elif kind == "internet":
+                    self.internet = ev[1]
+                    changed.add("peers")
+                elif kind == "ext":
+                    self.ext_call(ev[1], ev[2])
                 elif kind == "log":
                     print(ev[1])
         except queue.Empty:
@@ -1337,7 +1875,9 @@ class App:
         self.root.after(1000, self._tick)
 
     def _shown_status(self, peer):
-        if peer["last_seen"] is None or time.monotonic() - peer["last_seen"] > OFFLINE_AFTER:
+        # Übers Internet melden sich alle seltener (RELAY_HEARTBEAT), also später grau
+        limit = OFFLINE_AFTER_INTERNET if peer.get("ip") == RELAY_IP else OFFLINE_AFTER
+        if peer["last_seen"] is None or time.monotonic() - peer["last_seen"] > limit:
             return "offline"
         return peer["status"]
 
@@ -1421,6 +1961,10 @@ class App:
                          for r in self.requests.values()],
             "max_tries": MAX_TRIES,
             "info": self.request_info,
+            "internet": self.internet,
+            **({"extra": {"title": self.extension,
+                          "buttons": [{"id": b[0], "text": b[1]} for b in self.ext_buttons],
+                          "info": self.ext_info}} if self.ext_buttons or self.ext_info else {}),
         }
 
     def _render_peers(self):
@@ -1429,7 +1973,9 @@ class App:
         if not self.peers:
             hint = "Noch niemand gefunden …"
             if time.monotonic() - self.started > 15:
-                hint += "\nStimmt der Code? Sind alle im selben WLAN?"
+                hint += "\nStimmt der Code? Haben alle Version %s?" % APP_VERSION
+                if self.internet is False:
+                    hint += "\nInternet-Weg: keine Verbindung (nur WLAN)"
             tk.Label(self.peer_frame, text=hint, fg="#777", bg=BG, justify="left").pack(anchor="w")
             return
         for p in sorted(self.peers.values(), key=self._peer_order):
@@ -1483,6 +2029,115 @@ class App:
             color, t = texts[r["state"]]
             tk.Label(self.request_frame, text="%s: %s" % (r["coach"], t.format(tries=r["tries"])),
                      bg=BG, fg=color, anchor="w").pack(fill="x")
+
+
+# ===========================================================================
+# TEIL 8: Erweiterungen
+# ===========================================================================
+# Wer mehr Knöpfe will, legt eine Datei erweiterung.py in den Einstellungs-Ordner
+# (neben einstellungen.json, siehe TEIL 2). Gibt es sie, lädt die App sie beim
+# Start und ruft setup(api) auf. Ohne Datei passiert nichts. Eine kaputte
+# Erweiterung stoppt die App nicht, sie wird nur nicht geladen.
+#
+# Was eine Erweiterung mit api machen kann:
+#   api.me, api.key, api.lib     wer bin ich, Schlüssel der Klasse, dieses Modul
+#   api.button(id, text, fn)     Knopf im Fenster, im Menü der kleinen Leiste und
+#                                im Leisten-Panel (klassenzimmer --erweiterung ID)
+#   api.info(zeilen)             Textzeilen dazu (z.B. ein Countdown)
+#   api.notify(titel, text, dringend=False)   Meldung auf dem Bildschirm
+#   api.listen(thema, fn)        rohe Pakete empfangen, fn(daten) im Hauptthread
+#   api.send(thema, daten)       rohe Pakete an alle (WLAN und Internet)
+#   api.every(sekunden, fn)      regelmässig etwas tun (im Hauptthread)
+# Die App liest die Pakete nicht: Verschlüsseln und Signieren macht die
+# Erweiterung selbst (z.B. mit api.lib.seal und einem eigenen Schlüssel).
+#
+# Achtung: Eine Erweiterung ist Python-Code und darf alles, was die App darf.
+# Nur Dateien aus einer Quelle benutzen, der man vertraut.
+
+EXTENSION_FILE = "erweiterung.py"
+EXTENSION_ENV = "KLASSENZIMMER_ERWEITERUNG"      # anderer Pfad (z.B. zum Testen)
+
+
+def extension_path():
+    p = os.environ.get(EXTENSION_ENV)
+    return Path(p) if p else config_dir() / EXTENSION_FILE
+
+
+def notify(title, text, urgent=False, root=None):
+    """Meldung auf dem Bildschirm: Linux notify-send, Mac Mitteilung,
+    sonst (Windows) ein kleines Fenster, das immer im Vordergrund ist."""
+    try:
+        if SYSTEM == "Linux" and shutil.which("notify-send"):
+            subprocess.Popen(["notify-send", "-a", "Klassenzimmer", "-u", "critical" if urgent else "normal",
+                              title, text], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return
+        if SYSTEM == "Darwin":
+            script = "display notification %s with title %s" % (json.dumps(text), json.dumps(title))
+            subprocess.Popen(["osascript", "-e", script], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return
+    except OSError:
+        pass
+    if root is None:
+        return
+    w = tk.Toplevel(root, bg=ORANGE if urgent else "#333", padx=14, pady=10)
+    w.overrideredirect(True)
+    w.attributes("-topmost", True)
+    tk.Label(w, text=title, bg=w["bg"], fg="white", font=("TkDefaultFont", 11, "bold")).pack(anchor="w")
+    tk.Label(w, text=text, bg=w["bg"], fg="white", justify="left", wraplength=320).pack(anchor="w")
+    w.update_idletasks()
+    w.geometry("+%d+%d" % (w.winfo_screenwidth() - w.winfo_reqwidth() - 30, 80))
+    w.bind("<Button-1>", lambda e: w.destroy())
+    w.after(12000, w.destroy)
+
+
+class ExtensionAPI:
+    def __init__(self, app, net):
+        self._app, self._net = app, net
+        self.me, self.key = app.me, net.key
+        self.lib = sys.modules[__name__]
+
+    def button(self, button_id, text, fn):
+        self._app.ext_add_button(clean_text(button_id, 30), clean_text(text, 40), fn)
+
+    def info(self, lines):
+        self._app.ext_set_info([clean_text(line, 120) for line in lines][:6])
+
+    def notify(self, title, text, urgent=False):
+        notify(clean_text(title, 80), clean_text(text, 300), urgent, self._app.root)
+        if urgent:
+            self._app.root.bell()
+
+    def listen(self, topic, fn):
+        # Netzwerk-Thread -> Queue -> Hauptthread (tkinter-Regel, siehe TEIL 6)
+        self._net.listen_raw(topic, lambda data: self._app.events.put(("ext", fn, data)))
+
+    def send(self, topic, data):
+        self._net.send_raw(topic, data)
+
+    def every(self, seconds, fn):
+        def run():
+            self._app.ext_call(fn)
+            self._app.root.after(int(seconds * 1000), run)
+        self._app.root.after(int(seconds * 1000), run)
+
+
+def load_extension(app, net, path=None):
+    """erweiterung.py laden und setup(api) aufrufen. Gibt den Namen zurück oder None."""
+    path = Path(path) if path else extension_path()
+    if not path.is_file():
+        return None
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("klassenzimmer_erweiterung", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        module.setup(ExtensionAPI(app, net))
+    except Exception as e:                       # kaputte Erweiterung: App läuft weiter
+        print("Erweiterung %s nicht geladen: %s: %s" % (path, type(e).__name__, e))
+        return None
+    name = getattr(module, "NAME", path.stem)
+    print("Erweiterung geladen: %s" % name)
+    return name
 
 
 # ===========================================================================
@@ -1592,6 +2247,7 @@ def main():
                         help="Schüler: der laufenden App sagen, den Coach um Hilfe zu fragen")
     parser.add_argument("--erledigt", metavar="ID", help="Coach: Hilfeanfrage als erledigt markieren")
     parser.add_argument("--entfernen", metavar="ID", help="jemanden aus der Klassenliste entfernen")
+    parser.add_argument("--erweiterung", metavar="ID", help="Knopf einer Erweiterung drücken (TEIL 8)")
     parser.add_argument("--waybar-einrichten", action="store_true",
                         help="Omarchy/Hyprland: Punkt in der Waybar einrichten")
     parser.add_argument("--ansicht", choices=("mini", "waybar", "fenster"),
@@ -1602,6 +2258,8 @@ def main():
                         help="Broadcast-Adresse, z.B. 192.168.1.255")
     parser.add_argument("--verlust", type=float, default=0.0,
                         help="zum Üben: Anteil verlorener Pakete, z.B. 0.3")
+    parser.add_argument("--ohne-internet", action="store_true",
+                        help="nur im WLAN suchen, nicht übers Internet (TEIL 5b)")
     parser.add_argument("--version", action="version", version="Klassenzimmer " + APP_VERSION)
     args = parser.parse_args()
 
@@ -1616,7 +2274,7 @@ def main():
               "quit" if args.beenden else None
     command_arg = None
     for name, value in (("hilfe", args.hilfe), ("erledigt", args.erledigt),
-                        ("entfernen", args.entfernen)):
+                        ("entfernen", args.entfernen), ("erweiterung", args.erweiterung)):
         if value is not None:
             command, command_arg = name, value
 
@@ -1690,8 +2348,17 @@ def main():
     # Normal: fester Port 50506 (gut für Firewalls). Testmodus: zufälliger Port,
     # damit mehrere Apps auf einem PC laufen können.
     port = args.port or (0 if test_mode else DIRECT_PORT)
+    # Internet-Weg: an, ausser --ohne-internet oder KLASSENZIMMER_INTERNET=aus.
+    # Mit KLASSENZIMMER_INTERNET=wss://… geht es über einen anderen Vermittler.
+    relay_url = os.environ.get("KLASSENZIMMER_INTERNET", RELAY_URL).strip()
+    relay = None
+    if not args.ohne_internet and relay_url.lower() not in ("", "aus", "0", "nein", "off"):
+        try:
+            relay = Relay(relay_url)
+        except ValueError as e:
+            print(e)
     net = Network(me, events, key, broadcast_addr=args.broadcast, loss=args.verlust,
-                  port=port, port_fallback=not args.port)
+                  port=port, port_fallback=not args.port, relay=relay)
     try:
         net.start()
     except OSError as e:
@@ -1700,8 +2367,11 @@ def main():
 
     view = args.ansicht or ("fenster" if test_mode else "waybar" if is_hyprland() else "mini")
     root = tk.Tk()
-    App(root, me, net, events, room_id(key), code, store, view=view,
-        start_hidden=args.autostart or args.speichern, control=control)
+    app = App(root, me, net, events, room_id(key), code, store, view=view,
+              start_hidden=args.autostart or args.speichern, control=control)
+    # Erweiterung: normal aus dem Einstellungs-Ordner, im Testmodus nur mit KLASSENZIMMER_ERWEITERUNG
+    if store or os.environ.get(EXTENSION_ENV):
+        app.extension = load_extension(app, net)
     if control:
         control.start(events)
     try:

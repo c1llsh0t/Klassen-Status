@@ -10,7 +10,7 @@ Eine App, die im Klassenzimmer zeigt:
 - **wer da ist** und ob man gerade gestört werden darf
 - **wer Hilfe braucht**, in der richtigen Reihenfolge
 
-Das Besondere: Es gibt **keinen Server** und kein Konto. Die Apps reden direkt miteinander über das WLAN. Man nennt das **Peer-to-Peer** („von Gleich zu Gleich“).
+Das Besondere: Es gibt **keinen eigenen Server** und kein Konto. Die Apps reden direkt miteinander über das WLAN. Man nennt das **Peer-to-Peer** („von Gleich zu Gleich“). Lässt das WLAN das nicht zu, gehen die Nachrichten ab Version 2.3 verschlüsselt über einen öffentlichen Vermittler im Internet.
 
 ---
 
@@ -133,10 +133,9 @@ Gespeichert wird hier:
 
 ## 5. Gut zu wissen (Grenzen)
 
-- **Nur im selben Netz:** Alle müssen im selben WLAN/LAN sein. Verschiedene Hotspots gehen nicht.
-- **Manche WLANs blockieren das:** Viele Schul- und Gäste-WLANs haben „Client Isolation“. Dann dürfen Geräte nicht direkt miteinander reden, und die App findet niemanden. Lösung: anderes WLAN oder ein eigener Router.
+- **Manche WLANs blockieren das:** Viele Schul- und Gäste-WLANs haben „Client Isolation“. Dann dürfen Geräte nicht direkt miteinander reden. Ab Version 2.3 geht die App dann übers Internet. Das braucht den öffentlichen Vermittler `public.cloud.shiftr.io`. Ist der einmal nicht erreichbar, findet man sich nur im selben WLAN.
 - **Firewall:** Beim ersten Start muss man den Netzwerkzugriff erlauben. Unter Linux mit ufw: `sudo ufw allow 50505:50506/udp`. Details stehen in der README.
-- **Nicht verschlüsselt:** Wer im selben WLAN ist, kann mitlesen, aber ohne Code nichts fälschen. Wer den Code kennt (die Klasse), könnte sich theoretisch als jemand anderes ausgeben. Darum keine privaten Dinge in die Hilfeanfrage schreiben.
+- **Im WLAN nicht verschlüsselt:** Übers Internet ist alles mit dem Code verschlüsselt. Im WLAN selbst kann aber mitlesen, wer im selben WLAN ist (fälschen kann er ohne Code nichts). Wer den Code kennt (die Klasse), könnte sich theoretisch als jemand anderes ausgeben. Darum keine privaten Dinge in die Hilfeanfrage schreiben.
 - **Uhrzeit:** Geht die Uhr eines Computers mehr als 10 Minuten falsch, kann er nicht mitmachen.
 - **Die Warteschlange ist nicht gespeichert:** Schliesst der Coach die App, sind offene Anfragen weg.
 - **Warnung beim ersten Start:** Windows und Mac warnen, weil die App nicht kostenpflichtig signiert ist. Das ist normal.

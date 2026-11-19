@@ -10,11 +10,45 @@ Eine Peer-to-Peer-App fürs Klassenzimmer: Alle Rechner im selben WLAN/LAN sehen
 
 **Download:** unter **[Releases](../../releases/latest)** die Datei für dein System holen. Python braucht man dafür nicht.
 
+**Linux mit einem Befehl** (Ubuntu, Debian, Mint, Fedora, Arch …), im Terminal:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/c1llsh0t/Klassen-Status/main/install-linux.sh | bash
+```
+
 ---
 
 ## 🤖 Zu faul? Lass Claude alles installieren
 
-Kopiere diesen Text in **Claude** (Claude Code oder die Claude-App mit Zugriff auf deinen Computer). Claude fragt dich einmal nach Name, Rolle und Code und erledigt dann **alles** selbst: herunterladen, installieren, Firewall freigeben, Autostart einrichten (bei Omarchy auch die Waybar) und starten. Funktioniert auch zum **Aktualisieren**.
+Kopiere den passenden Text in **Claude** (Claude Code oder die Claude-App mit Zugriff auf deinen Computer). Claude fragt dich einmal nach Name, Rolle und Code und erledigt dann **alles** selbst. Funktioniert auch zum **Aktualisieren**.
+
+### 🐧 Linux (kurz, benutzt den Installer)
+
+```text
+Installiere die App "Klassenzimmer" auf diesem Linux-Computer. Mach alles selbst.
+Frag mich nur EINMAL ganz am Anfang (alles in einer einzigen Frage):
+  - meinen Namen
+  - ob ich "student" oder "coach" bin
+  - student: den Beitrittscode vom Coach (6 Zeichen, z.B. K7Q-M3X)
+  - coach: den Klassennamen (z.B. INF3a) und meinen Code, falls ich schon einen habe
+    (sonst NEU, dann erzeugt die App einen)
+
+Dann führe diesen einen Befehl aus (Platzhalter ersetzen, --klasse nur beim Coach):
+
+  curl -fsSL https://raw.githubusercontent.com/c1llsh0t/Klassen-Status/main/install-linux.sh | bash -s -- \
+    --name "<Name>" --role <student|coach> --code <Code|NEU> --klasse "<Klasse>"
+
+Das Skript lädt die App herunter, beendet eine alte Version, gibt die Firewall frei,
+legt Autostart und App-Menü an und startet die App. Am Ende steht "✔ Fertig".
+  - Steht da "Firewall nicht freigegeben": zeig mir den sudo-Befehl, den das Skript
+    ausgibt, zum Kopieren (ich tippe ihn selbst in ein Terminal). Sonst nichts tun.
+  - Bei einer Fehlermeldung: lesen, Ursache beheben, den Befehl nochmal ausführen.
+
+Zum Schluss nur kurz sagen, dass alles fertig ist. Beim Coach den Beitrittscode gross
+anzeigen (steht im Kasten in der Ausgabe).
+```
+
+### 🪟🍎 Windows, Mac (und Linux ohne Installer)
 
 ```text
 Installiere die App "Klassenzimmer" komplett auf diesem Computer. Mach alles selbst,
@@ -107,6 +141,20 @@ Steht da „ist beschädigt“, im Terminal eingeben: `xattr -cr /Applications/K
 Autostart prüfen oder ausschalten: *Systemeinstellungen → Allgemein → Anmeldeobjekte*.
 
 ## 🐧 Installation: Linux und Omarchy
+
+**Am einfachsten**, im Terminal (als normaler Benutzer, nicht mit sudo):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/c1llsh0t/Klassen-Status/main/install-linux.sh | bash
+```
+
+Das Skript ([install-linux.sh](install-linux.sh)) lädt die neueste Version nach `~/.local/bin/klassenzimmer`, beendet eine alte Version, gibt die Firewall frei (ufw oder firewalld, fragt dafür nach deinem Passwort), legt einen Eintrag im **App-Menü** an und öffnet das Startfenster. Nochmal ausführen = aktualisieren.
+
+- Ohne Startfenster einrichten: `... | bash -s -- --name "Lena" --role student --code K7Q-M3X` (Coach: `--role coach --klasse INF3a --code NEU`)
+- Wieder entfernen: `... | bash -s -- --entfernen`
+- Nur für 64-Bit-Intel/AMD. Auf anderen Rechnern (z.B. Raspberry Pi) siehe *Für Entwickler*.
+
+**Von Hand** geht es so:
 
 ```bash
 mkdir -p ~/.local/bin

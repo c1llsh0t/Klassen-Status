@@ -68,7 +68,7 @@ except ImportError:
         sys.exit(1)
     raise
 
-APP_VERSION = "2.0"
+APP_VERSION = "2.1"
 
 
 # ===========================================================================
@@ -434,6 +434,19 @@ def set_autostart(enabled):
 #    Waybar beim Klick aufruft.
 
 COMMANDS = ("show", "toggle", "status", "quit")
+# Befehle mit Text dahinter, z.B. "hilfe Aufgabe 3" (für Leisten-Panels wie Omarchy)
+ARG_COMMANDS = ("hilfe", "erledigt", "entfernen")
+MAX_CONTROL = 1024                 # Bytes pro Steuerbefehl
+
+
+def parse_control(line):
+    """'hilfe Aufgabe 3' -> ('hilfe', 'Aufgabe 3'). Unbekanntes -> None."""
+    name, _, arg = line.strip().partition(" ")
+    if name in COMMANDS and not arg:
+        return name, None
+    if name in ARG_COMMANDS:
+        return name, arg.strip()
+    return None
 
 
 class Control:
@@ -478,9 +491,16 @@ class Control:
                 with conn:
                     try:
                         conn.settimeout(1)
-                        cmd = conn.recv(32).decode("ascii", "ignore").strip()
-                        if cmd in COMMANDS:
-                            events.put(("control", cmd))
+                        data = b""
+                        while b"\n" not in data and len(data) < MAX_CONTROL:
+                            chunk = conn.recv(MAX_CONTROL)
+                            if not chunk:
+                                break
+                            data += chunk
+                        parsed = parse_control(data[:MAX_CONTROL].decode("utf-8", "ignore"))
+                        if parsed:
+                            name, arg = parsed
+                            events.put(("control", name) if arg is None else ("control", name, arg))
                             conn.sendall(b"ok\n")
                     except OSError:
                         pass
@@ -499,11 +519,12 @@ class Control:
             self.sock = None
 
 
-def send_control(cmd):
+def send_control(cmd, arg=None):
     """Der laufenden App einen Befehl schicken. True = hat geklappt."""
+    line = cmd if arg is None else "%s %s" % (cmd, " ".join(str(arg).split()))
     try:
         with socket.create_connection(("127.0.0.1", CONTROL_PORT), timeout=2) as s:
-            s.sendall(cmd.encode("ascii") + b"\n")
+            s.sendall(line.encode("utf-8")[:MAX_CONTROL - 1] + b"\n")
             return s.recv(8).startswith(b"ok")
     except OSError:
         return False
@@ -532,6 +553,23 @@ def write_waybar(text, css_class, tooltip):
         tmp.write_text(json.dumps({"text": text, "class": css_class, "tooltip": tooltip},
                                   ensure_ascii=False), encoding="utf-8")
         os.replace(tmp, f)
+    except OSError:
+        pass
+
+
+def state_file():
+    """Ganzer Zustand als JSON (Teilnehmer, Anfragen …) für Leisten-Panels,
+    z.B. das Omarchy-Panel. Liegt neben waybar.json."""
+    return waybar_file().with_name("zustand.json")
+
+
+def write_state(state):
+    path = state_file()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(path)                  # nie halb geschrieben lesen
     except OSError:
         pass
 
@@ -989,6 +1027,8 @@ class App:
         self.started = time.monotonic()
         self.visible = True
         self.last_waybar = None
+        self.last_state = None
+        self.request_info = ""         # z.B. "Kein Coach online."
 
         self.peers = {}                # peer_id -> {name, role, status, ip, port, last_seen}
         self.queue = []                # Coach: offene Anfragen, älteste zuerst
@@ -1118,14 +1158,18 @@ class App:
         self._update_status_button()
         self._update_small_views()
 
-    def ask_for_help(self, text=None):
+    def ask_for_help(self, text=None, show=True):
+        if self.me["role"] != "student":
+            return
         coaches = [p for p in self.peers.values()
                    if p["role"] == "coach" and self._shown_status(p) != "offline" and p["ip"]]
         if not coaches:
             self._show_request_info("Kein Coach online.")
-            if text is not None:          # von der kleinen Leiste: Fenster zeigen
+            if text is not None and show:   # von der kleinen Leiste: Fenster zeigen
                 self.show_window()
+            self._update_small_views()
             return
+        self.request_info = ""
         if text is None:
             text = self.help_text.get().strip()
             self.help_text.delete(0, "end")
@@ -1146,15 +1190,16 @@ class App:
         self._render_queue()
         self._update_small_views()
 
-    def remove_peer(self, peer_id):
+    def remove_peer(self, peer_id, ask=True):
         """Jemanden aus der gespeicherten Klassenliste entfernen."""
         p = self.peers.get(peer_id)
-        if p and messagebox.askyesno("Entfernen", "%s aus der Klassenliste entfernen?" % p["name"],
-                                     parent=self.root):
+        if p and (not ask or messagebox.askyesno("Entfernen", "%s aus der Klassenliste entfernen?" % p["name"],
+                                                 parent=self.root)):
             del self.peers[peer_id]
             if self.store:
                 self.store.forget(self.room, peer_id)
             self._render_peers()
+            self._update_small_views()
 
     def copy_code(self):
         self.root.clipboard_clear()
@@ -1166,6 +1211,10 @@ class App:
         if self.view == "waybar":
             write_waybar("<span color='%s'>●</span>" % COLORS["offline"], "offline",
                          "Klassenzimmer läuft nicht")
+            try:
+                state_file().unlink()
+            except OSError:
+                pass
         self.net.stop()
         if self.control:
             self.control.close()
@@ -1205,8 +1254,16 @@ class App:
                         r["state"] = "done"
                         changed.add("requests")
                 elif kind == "control":
-                    {"show": self.show_window, "toggle": self.toggle_window,
-                     "status": self.toggle_status, "quit": self.quit}[ev[1]]()
+                    arg = ev[2] if len(ev) > 2 else ""
+                    if ev[1] == "hilfe":
+                        self.ask_for_help(arg, show=False)
+                    elif ev[1] == "erledigt":
+                        self.mark_done(arg)
+                    elif ev[1] == "entfernen":
+                        self.remove_peer(arg, ask=False)
+                    else:
+                        {"show": self.show_window, "toggle": self.toggle_window,
+                         "status": self.toggle_status, "quit": self.quit}[ev[1]]()
                     if ev[1] == "quit":
                         return
                 elif kind == "log":
@@ -1297,6 +1354,36 @@ class App:
         if self.view == "waybar" and state != self.last_waybar:
             self.last_waybar = state
             write_waybar(*state)
+        if self.view == "waybar":
+            full = self._full_state()
+            if full != self.last_state:
+                self.last_state = full
+                write_state(full)
+
+    def _peer_order(self, p):
+        # Coaches zuerst, dann wer da ist, dann nach Name
+        return (p["role"] != "coach", self._shown_status(p) == "offline", p["name"].lower())
+
+    def _full_state(self):
+        """Alles, was ein Leisten-Panel zum Anzeigen braucht (siehe state_file)."""
+        return {
+            "version": APP_VERSION,
+            "name": self.me["name"],
+            "role": self.me["role"],
+            "status": self.me["status"],
+            "klasse": self._class_name(),
+            "code": format_code(self.code),
+            "peers": [{"id": p["peer_id"], "name": p["name"], "role": p["role"],
+                       "status": self._shown_status(p)}
+                      for p in sorted(self.peers.values(), key=self._peer_order)],
+            "searching_long": not self.peers and time.monotonic() - self.started > 15,
+            "queue": [{"id": q["help_id"], "name": q["name"], "text": q["text"], "time": q["time"]}
+                      for q in self.queue],
+            "requests": [{"coach": r["coach"], "state": r["state"], "tries": r["tries"]}
+                         for r in self.requests.values()],
+            "max_tries": MAX_TRIES,
+            "info": self.request_info,
+        }
 
     def _render_peers(self):
         for w in self.peer_frame.winfo_children():
@@ -1307,10 +1394,7 @@ class App:
                 hint += "\nStimmt der Code? Sind alle im selben WLAN?"
             tk.Label(self.peer_frame, text=hint, fg="#777", bg=BG, justify="left").pack(anchor="w")
             return
-        # Coaches zuerst, dann wer da ist, dann nach Name
-        def order(p):
-            return (p["role"] != "coach", self._shown_status(p) == "offline", p["name"].lower())
-        for p in sorted(self.peers.values(), key=order):
+        for p in sorted(self.peers.values(), key=self._peer_order):
             status = self._shown_status(p)
             row = tk.Frame(self.peer_frame, bg=BG)
             row.pack(fill="x", pady=2)
@@ -1343,6 +1427,7 @@ class App:
     def _show_request_info(self, text):
         if self.me["role"] != "student":
             return
+        self.request_info = text
         for w in self.request_frame.winfo_children():
             w.destroy()
         tk.Label(self.request_frame, text=text, bg=BG, fg="#b00").pack(anchor="w")
@@ -1465,6 +1550,10 @@ def main():
     parser.add_argument("--zeigen", action="store_true", help="Fenster der laufenden App zeigen/verstecken")
     parser.add_argument("--status-umschalten", action="store_true", help="Status der laufenden App wechseln")
     parser.add_argument("--beenden", action="store_true", help="laufende App beenden")
+    parser.add_argument("--hilfe", nargs="?", const="", metavar="TEXT",
+                        help="Schüler: der laufenden App sagen, den Coach um Hilfe zu fragen")
+    parser.add_argument("--erledigt", metavar="ID", help="Coach: Hilfeanfrage als erledigt markieren")
+    parser.add_argument("--entfernen", metavar="ID", help="jemanden aus der Klassenliste entfernen")
     parser.add_argument("--waybar-einrichten", action="store_true",
                         help="Omarchy/Hyprland: Punkt in der Waybar einrichten")
     parser.add_argument("--ansicht", choices=("mini", "waybar", "fenster"),
@@ -1487,6 +1576,11 @@ def main():
 
     command = "toggle" if args.zeigen else "status" if args.status_umschalten else \
               "quit" if args.beenden else None
+    command_arg = None
+    for name, value in (("hilfe", args.hilfe), ("erledigt", args.erledigt),
+                        ("entfernen", args.entfernen)):
+        if value is not None:
+            command, command_arg = name, value
 
     # Testmodus: Name+Rolle auf der Kommandozeile -> nichts speichern,
     # mehrere Instanzen auf einem PC erlaubt.
@@ -1509,7 +1603,7 @@ def main():
         control = Control()
         if not control.acquire():
             # Port besetzt: Läuft die App schon? Dann ihr den Befehl schicken.
-            if send_control(command or "show"):
+            if send_control(command or "show", command_arg):
                 return
             if command:
                 print("Klassenzimmer läuft nicht.")
@@ -1518,7 +1612,7 @@ def main():
             print("Port %d ist von einem anderen Programm belegt – "
                   "'nur einmal starten' und Waybar-Klicks funktionieren nicht." % CONTROL_PORT)
             control = None
-        elif command in ("status", "quit"):
+        elif command in ("status", "quit") + ARG_COMMANDS:
             control.close()                     # läuft nicht -> nichts zu tun
             print("Klassenzimmer läuft nicht.")
             return

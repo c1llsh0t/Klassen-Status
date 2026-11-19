@@ -348,5 +348,36 @@ class WaybarAndControlTest(unittest.TestCase):
         c2.close()
 
 
+    def test_steuerbefehle_mit_text(self):
+        P = K.parse_control
+        self.assertEqual(P("toggle\n"), ("toggle", None))
+        self.assertEqual(P("hilfe Aufgabe 3 geht nicht"), ("hilfe", "Aufgabe 3 geht nicht"))
+        self.assertEqual(P("hilfe"), ("hilfe", ""))             # Hilfe ohne Text
+        self.assertEqual(P("erledigt abc123"), ("erledigt", "abc123"))
+        self.assertIsNone(P("toggle jetzt"))                    # alte Befehle ohne Text
+        self.assertIsNone(P("rm -rf /"))
+        c = K.Control()
+        if not c.acquire():
+            self.skipTest("Steuer-Port belegt (läuft die App gerade?)")
+        try:
+            q = queue.Queue()
+            c.start(q)
+            self.assertTrue(K.send_control("hilfe", "Aufgabe 3 \n  mit Umlaut ä"))
+            self.assertEqual(q.get(timeout=2), ("control", "hilfe", "Aufgabe 3 mit Umlaut ä"))
+            self.assertTrue(K.send_control("hilfe", "x" * 5000))  # zu lang -> abgeschnitten
+            name, kind, text = q.get(timeout=2)
+            self.assertEqual(kind, "hilfe")
+            self.assertLess(len(text.encode("utf-8")), K.MAX_CONTROL)
+        finally:
+            c.close()
+
+    def test_zustand_datei(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {"XDG_CACHE_HOME": d}):
+            self.assertEqual(K.state_file(), Path(d) / "klassenzimmer" / "zustand.json")
+            K.write_state({"name": "Lena", "peers": []})
+            import json
+            self.assertEqual(json.loads(K.state_file().read_text(encoding="utf-8"))["name"], "Lena")
+            self.assertFalse(K.state_file().with_suffix(".tmp").exists())
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

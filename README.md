@@ -231,6 +231,7 @@ python3 -m unittest -v test_klassenzimmer                        # automatische 
 | `--kein-autostart` | mit `--speichern`: Autostart nicht einschalten |
 | `--autostart` | gespeicherte Einstellungen benutzen, klein starten |
 | `--zeigen` / `--status-umschalten` / `--beenden` | Befehl an die laufende App |
+| `--hilfe [TEXT]` / `--erledigt ID` / `--entfernen ID` | Hilfe anfragen, Anfrage erledigen, jemanden aus der Liste nehmen (für Leisten-Panels) |
 | `--waybar-einrichten` | Omarchy/Hyprland: Punkt in die Waybar eintragen |
 | `--ansicht mini\|waybar\|fenster` | Ansicht erzwingen (Standard: automatisch) |
 | `--port 50510` | anderer Port für direkte Nachrichten (Standard: 50506) |

@@ -10,6 +10,12 @@ Eine Peer-to-Peer-App fürs Klassenzimmer: Alle Rechner im selben WLAN/LAN sehen
 
 **Download:** unter **[Releases](../../releases/latest)** die Datei für dein System holen. Python braucht man dafür nicht.
 
+**Omarchy mit einem Befehl**: App plus Panel in der Leiste (wie WLAN und Bluetooth), im Terminal:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/c1llsh0t/Klassen-Status/main/install-omarchy.sh | bash
+```
+
 **Linux mit einem Befehl** (Ubuntu, Debian, Mint, Fedora, Arch …), im Terminal:
 
 ```bash
@@ -22,7 +28,36 @@ curl -fsSL https://raw.githubusercontent.com/c1llsh0t/Klassen-Status/main/instal
 
 Kopiere den passenden Text in **Claude** (Claude Code oder die Claude-App mit Zugriff auf deinen Computer). Claude fragt dich einmal nach Name, Rolle und Code und erledigt dann **alles** selbst. Funktioniert auch zum **Aktualisieren**.
 
-### 🐧 Linux (kurz, benutzt den Installer)
+### 🟢 Omarchy (App + Panel in der Leiste)
+
+```text
+Installiere die App "Klassenzimmer" auf diesem Omarchy-Computer. Mach alles selbst.
+Frag mich nur EINMAL ganz am Anfang (alles in einer einzigen Frage):
+  - meinen Namen
+  - ob ich "student" oder "coach" bin
+  - student: den Beitrittscode vom Coach (6 Zeichen, z.B. K7Q-M3X)
+  - coach: den Klassennamen (z.B. INF3a) und meinen Code, falls ich schon einen habe
+    (sonst NEU, dann erzeugt die App einen)
+
+Dann führe diesen einen Befehl aus (Platzhalter ersetzen, --klasse nur beim Coach):
+
+  curl -fsSL https://raw.githubusercontent.com/c1llsh0t/Klassen-Status/main/install-omarchy.sh | bash -s -- \
+    --name "<Name>" --role <student|coach> --code <Code|NEU> --klasse "<Klasse>"
+
+Das Skript lädt die App herunter, beendet eine alte Version, gibt die Firewall frei,
+legt Autostart und App-Menü an, setzt das Klassenzimmer-Panel in die Leiste und
+startet die App. Am Ende steht "✔ Fertig".
+  - Steht da "Firewall nicht freigegeben": zeig mir den sudo-Befehl, den das Skript
+    ausgibt, zum Kopieren (ich tippe ihn selbst in ein Terminal). Sonst nichts tun.
+  - Bei einer Fehlermeldung: lesen, Ursache beheben, den Befehl nochmal ausführen.
+  - Die Leiste (shell.json) und hyprland.lua NICHT von Hand ändern, das macht das Skript.
+
+Zum Schluss kurz sagen, dass alles fertig ist: oben rechts in der Leiste ist das
+Schul-Zeichen, Klick öffnet das Panel. Beim Coach den Beitrittscode gross anzeigen
+(steht im Kasten in der Ausgabe).
+```
+
+### 🐧 Linux (Ubuntu, Fedora, Arch …, benutzt den Installer)
 
 ```text
 Installiere die App "Klassenzimmer" auf diesem Linux-Computer. Mach alles selbst.
@@ -43,6 +78,9 @@ legt Autostart und App-Menü an und startet die App. Am Ende steht "✔ Fertig".
   - Steht da "Firewall nicht freigegeben": zeig mir den sudo-Befehl, den das Skript
     ausgibt, zum Kopieren (ich tippe ihn selbst in ein Terminal). Sonst nichts tun.
   - Bei einer Fehlermeldung: lesen, Ursache beheben, den Befehl nochmal ausführen.
+
+Ist das hier Omarchy (Befehl "omarchy" vorhanden), stattdessen install-omarchy.sh mit
+denselben Angaben nehmen, dann kommt Klassenzimmer zusätzlich als Panel in die Leiste.
 
 Zum Schluss nur kurz sagen, dass alles fertig ist. Beim Coach den Beitrittscode gross
 anzeigen (steht im Kasten in der Ausgabe).
@@ -140,7 +178,27 @@ Autostart prüfen oder ausschalten: Task-Manager (Ctrl+Shift+Esc) → **Autostar
 Steht da „ist beschädigt“, im Terminal eingeben: `xattr -cr /Applications/Klassenzimmer.app`
 Autostart prüfen oder ausschalten: *Systemeinstellungen → Allgemein → Anmeldeobjekte*.
 
-## 🐧 Installation: Linux und Omarchy
+## 🟢 Installation: Omarchy
+
+Im Terminal (als normaler Benutzer, nicht mit sudo):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/c1llsh0t/Klassen-Status/main/install-omarchy.sh | bash
+```
+
+Das Skript ([install-omarchy.sh](install-omarchy.sh)) macht alles, was der Linux-Installer macht (App, Firewall, App-Menü, Autostart), und dazu:
+
+- **Panel in der Leiste** (Plugin `c1llsh0t.klassenzimmer`): Das Schul-Zeichen 󰑴 zeigt deinen Status (grün = online, gelb = nicht stören, orange = offene Fragen beim Coach). **Klick** öffnet das Panel wie bei WLAN oder Bluetooth, **Klick daneben oder Esc** schliesst es, **Rechtsklick** wechselt den Status.
+- Im Panel: Name, Klasse und Code, alle Teilnehmer mit Status, beim Schüler **„Coach um Hilfe fragen“** mit Textfeld, beim Coach die **Hilfeanfragen** mit „Erledigt“. Unten: Code kopieren, **Klasse wechseln**, Beenden.
+- Hilfsskript `~/.local/bin/klassenzimmer-leiste` (Starten, Klasse wechseln, Beenden) und eine Fensterregel in `~/.config/hypr/hyprland.lua`, damit das Startfenster unter der Leiste schwebt (vorher wird eine Sicherung `hyprland.lua.bak.*` angelegt).
+
+Ohne Angaben öffnet sich am Schluss das Startfenster direkt unter dem Zeichen. Danach braucht man das grosse Fenster nicht mehr, alles geht über das Panel.
+
+- Ohne Startfenster einrichten: `... | bash -s -- --name "Lena" --role student --code K7Q-M3X` (Coach: `--role coach --klasse INF3a --code NEU`)
+- Wieder entfernen (App, Panel, Hilfsskript, Fensterregel): `... | bash -s -- --entfernen`
+- Braucht die neue Omarchy-Leiste (`~/.config/omarchy/shell.json`). Ältere Omarchy-Versionen mit Waybar: Linux-Installer nehmen (unten).
+
+## 🐧 Installation: Linux
 
 **Am einfachsten**, im Terminal (als normaler Benutzer, nicht mit sudo):
 
@@ -166,7 +224,7 @@ sudo ufw allow 50505:50506/udp      # nur wenn ufw aktiv ist (z.B. Omarchy)
 
 Im Startfenster Name, Rolle und Code eingeben, ✅ **„Beim Anmelden automatisch starten“** setzen, **Los geht's**.
 
-- **Omarchy/Hyprland:** Die App richtet den **Punkt in der Waybar** automatisch ein (eine Sicherung der alten Einstellung bleibt als `config.jsonc.vor-klassenzimmer` liegen). Von Hand geht das mit `~/.local/bin/klassenzimmer --waybar-einrichten`. Startet die App nach dem Anmelden nicht von selbst, diese Zeile in `~/.config/hypr/autostart.conf` eintragen:
+- **Hyprland mit Waybar** (auch ältere Omarchy-Versionen): Die App richtet den **Punkt in der Waybar** automatisch ein (eine Sicherung der alten Einstellung bleibt als `config.jsonc.vor-klassenzimmer` liegen). Von Hand geht das mit `~/.local/bin/klassenzimmer --waybar-einrichten`. Startet die App nach dem Anmelden nicht von selbst, diese Zeile in `~/.config/hypr/autostart.conf` eintragen:
   ```
   exec-once = ~/.local/bin/klassenzimmer --autostart
   ```

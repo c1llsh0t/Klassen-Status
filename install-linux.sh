@@ -232,8 +232,10 @@ command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$
 say "Eintrag im App-Menü: Klassenzimmer"
 
 # --- 5. Einrichten und starten -------------------------------------------------
+# install-omarchy.sh ruft dieses Skript auf und schreibt die Schlusszeilen selbst
+OMARCHY_PANEL="${KLASSENZIMMER_OMARCHY:-0}"
 if [ "$START" = 0 ]; then
-  say "${G}Fertig.${N} Starten: Klassenzimmer im App-Menü öffnen."
+  [ "$OMARCHY_PANEL" = 1 ] || say "${G}Fertig.${N} Starten: Klassenzimmer im App-Menü öffnen."
   exit 0
 fi
 if [ -z "${DISPLAY:-}" ]; then
@@ -273,6 +275,7 @@ $(cat "$CACHE_DIR/start.log")"
 rm -f "$MARK"
 
 echo
+[ "$OMARCHY_PANEL" = 1 ] && DIALOG=2   # Schlusszeilen kommen von install-omarchy.sh
 if [ "$ROLE" = coach ] && [ -n "$SHOW" ]; then
   printf '    %s╔══════════════════════════════╗%s\n' "$B" "$N"
   printf '    %s║   Beitrittscode:  %-9s  ║%s\n' "$B" "$SHOW" "$N"
@@ -280,7 +283,9 @@ if [ "$ROLE" = coach ] && [ -n "$SHOW" ]; then
   echo "    Diesen Code den Schülern sagen."
   echo
 fi
-if [ "$DIALOG" = 1 ]; then
+if [ "$DIALOG" = 2 ]; then
+  exit 0
+elif [ "$DIALOG" = 1 ]; then
   say "${G}✔ Installiert.${N} Jetzt im Startfenster Name, Rolle und Code eintragen und 'Los geht's' klicken."
   echo "    Mit dem Häkchen 'Beim Anmelden automatisch starten' startet es danach von selbst."
 else
@@ -288,5 +293,10 @@ else
 fi
 echo "    Kleine Leiste am Bildschirmrand: Punkt = Status, Name = grosses Fenster."
 echo "    Später wieder öffnen: Klassenzimmer im App-Menü."
+if command -v omarchy >/dev/null 2>&1 && [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/shell.json" ]; then
+  echo
+  say "Du hast Omarchy: Mit diesem Befehl kommt Klassenzimmer als Panel in die Leiste:"
+  echo "    curl -fsSL https://raw.githubusercontent.com/c1llsh0t/Klassen-Status/main/install-omarchy.sh | bash"
+fi
 
 }

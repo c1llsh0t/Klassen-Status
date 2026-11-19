@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "c1llsh0t.klassenzimmer",
+  "name": "Klassenzimmer",
+  "version": "1.0.0",
+  "author": "c1llsh0t",
+  "description": "Klassenzimmer als Panel in der Leiste: Status, Teilnehmer, Coach um Hilfe fragen bzw. Hilfeanfragen erledigen",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Klassenzimmer.qml"
+  },
+  "barWidget": {
+    "displayName": "Klassenzimmer",
+    "description": "Schul-Zeichen in Statusfarbe; Klick öffnet das Panel, Rechtsklick wechselt den Status",
+    "category": "Info",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

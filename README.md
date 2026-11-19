@@ -306,6 +306,10 @@ Die App sucht zuerst im WLAN. Zusätzlich verbindet sie sich mit einem kostenlos
 - **Ausschalten:** mit `--ohne-internet` starten oder `KLASSENZIMMER_INTERNET=aus` setzen. Dann geht es nur im WLAN.
 - **Anderer Vermittler:** `KLASSENZIMMER_INTERNET=wss://benutzer:passwort@host/pfad` (jeder MQTT-Server mit WebSocket). Alle in der Klasse müssen denselben benutzen.
 
+### Erweiterungen (ab Version 2.3)
+
+Liegt im Einstellungs-Ordner (neben `einstellungen.json`) eine Datei `erweiterung.py`, lädt die App sie beim Start. Eine Erweiterung kann eigene Knöpfe und Textzeilen ins Fenster, ins Menü der kleinen Leiste und ins Omarchy-Panel bringen und eigene Nachrichten an die anderen schicken. Wie das geht, steht in `klassenzimmer.py` bei **TEIL 8**. Achtung: Eine Erweiterung ist Python-Code und darf alles, was die App darf. Nur Dateien aus einer Quelle benutzen, der man vertraut.
+
 ---
 
 ## Für Entwickler

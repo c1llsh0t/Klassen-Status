@@ -108,6 +108,7 @@ Darum verbindet sich die App zusätzlich mit einem öffentlichen **MQTT-Vermittl
 - **Verschlüsselung:** Die Signatur schützt nur vor Fälschungen. Damit der Vermittler Namen und Texte nicht lesen kann, wird jedes Paket zusätzlich verschlüsselt (`seal`): HMAC-SHA256 als Schlüsselstrom im Zähler-Modus, mit einer neuen Zufallszahl pro Paket. Ob unterwegs etwas verändert wurde, prüft danach wie immer `decode()` über die Signatur.
 - **Seltener melden:** Übers Internet schickt jede App ihren Heartbeat nur alle 15 s statt alle 5 s (schont den kostenlosen Vermittler). Wer nur übers Internet zu hören ist, wird darum erst nach 50 s grau. Ein Neuer bekommt trotzdem sofort Antwort: Wer ihn zum ersten Mal hört, schickt ihm seinen Heartbeat direkt in sein Thema.
 - **Doppelt ist egal:** Hört man jemanden im WLAN **und** übers Internet, fällt die zweite Kopie bei der Duplikat-Erkennung weg (gleiche `id`).
+- **Erweiterungen (TEIL 8)** können über denselben Weg eigene Pakete schicken (`send_raw`/`listen_raw`): im WLAN mit dem Kopf `KZX` + Thema, übers Internet in einem eigenen MQTT-Thema. Die App liest diese Pakete nicht, die Erweiterung verschlüsselt sie selbst.
 - **Ein Thread für den Socket:** Ein TLS-Socket soll nicht gleichzeitig von zwei Threads benutzt werden. Darum legen die anderen Threads ihre Pakete nur in eine Warteschlange, und der Relay-Thread sendet, empfängt und pingt. Bricht die Verbindung ab, verbindet er neu (Wartezeit 1, 2, 4 … höchstens 60 s).
 
 ### Zwei Sockets

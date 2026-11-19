@@ -13,8 +13,10 @@ import qs.Ui
 //
 // Daten: ~/.cache/klassenzimmer/zustand.json (schreibt die App ab Version 2.1).
 // Befehle: klassenzimmer --status-umschalten | --hilfe TEXT | --erledigt ID |
-//          --entfernen ID; Klasse wechseln / Starten / Beenden über
+//          --entfernen ID | --erweiterung ID; Klasse wechseln / Starten / Beenden über
 //          ~/.local/bin/klassenzimmer-leiste.
+// Erweiterung (ab 2.3): Hat die App eine erweiterung.py geladen, stehen ihre
+// Knöpfe und Zeilen in st.extra und erscheinen hier unter dem Kopf.
 Panel {
   id: root
   moduleName: "c1llsh0t.klassenzimmer"
@@ -47,6 +49,7 @@ Panel {
   readonly property var peers: live && st.peers ? st.peers : []
   readonly property var queue: live && st.queue ? st.queue : []
   readonly property var requests: live && st.requests ? st.requests : []
+  readonly property var extra: live && st.extra ? st.extra : null
   readonly property int onlineCount: {
     var n = 0
     for (var i = 0; i < peers.length; i++) if (peers[i].status !== "offline") n++
@@ -277,6 +280,38 @@ Panel {
             }
           }
 
+          // ---- Erweiterung (erweiterung.py): Zeilen + Knöpfe ----
+          Column {
+            visible: root.extra !== null
+            width: parent.width
+            spacing: Style.space(6)
+
+            PanelSectionHeader {
+              text: root.extra && root.extra.title ? String(root.extra.title).toUpperCase() : "EXTRAS"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+            Repeater {
+              model: root.extra && root.extra.info ? root.extra.info : []
+              Line { text: modelData; color: root.helpColor }
+            }
+            Flow {
+              width: parent.width
+              spacing: Style.space(6)
+              Repeater {
+                model: root.extra && root.extra.buttons ? root.extra.buttons : []
+                Button {
+                  text: modelData.text
+                  foreground: root.foreground
+                  bordered: true
+                  onClicked: root.run(["--erweiterung", modelData.id])
+                }
+              }
+            }
+          }
+
+          PanelSeparator { visible: root.extra !== null; foreground: root.foreground }
+
           // ---- Läuft nicht ----
           Column {
             visible: !root.live
@@ -311,7 +346,10 @@ Panel {
             Line {
               visible: root.peers.length === 0
               color: root.dim
-              text: "Noch niemand gefunden …" + (root.live && root.st.searching_long ? "\nStimmt der Code? Sind alle im selben WLAN?" : "")
+              text: "Noch niemand gefunden …" + (root.live && root.st.searching_long
+                    ? "\nStimmt der Code? Haben alle Version " + root.st.version + "?"
+                      + (root.st.internet === false ? "\nInternet-Weg: keine Verbindung (nur WLAN)" : "")
+                    : "")
             }
 
             Repeater {

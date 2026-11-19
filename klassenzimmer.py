@@ -34,6 +34,7 @@ Aufbau dieser Datei (in dieser Reihenfolge lesen!):
   TEIL 5b Internet-Weg                 – falls das WLAN die Geräte voneinander trennt
   TEIL 6  Oberfläche                   – grosses Fenster und kleine Leiste
   TEIL 7  Start                        – Kommandozeile, Startfenster, main()
+  TEIL 8  Erweiterungen                – eigene Knöpfe aus erweiterung.py
 """
 
 import argparse
@@ -101,6 +102,7 @@ RELAY_URL = "wss://public:public@public.cloud.shiftr.io/"
 RELAY_IP = "internet"         # "Adresse" von jemandem, den wir nur übers Internet hören
 RELAY_HEARTBEAT = 15.0        # übers Internet seltener "Ich bin da" (schont den Vermittler)
 OFFLINE_AFTER_INTERNET = 50.0 # ... und darum später grau
+RAW_MAGIC = b"KZX"            # rohe Pakete von Erweiterungen (TEIL 8), nicht signiert
                               # Fest, damit man in der Firewall nur 50505-50506 öffnen muss.
 CONTROL_PORT = int(os.environ.get("KLASSENZIMMER_STEUERPORT", 50507))
                               # TCP auf 127.0.0.1: "läuft schon?" + Befehle (siehe TEIL 4)
@@ -309,6 +311,17 @@ def unseal(blob, key):
     return _xor(body, _keystream(key, nonce, len(body)))
 
 
+RAW_TOPIC = re.compile(r"[a-z0-9_-]{1,40}")
+
+
+def raw_relay_topic(topic, reverse=False):
+    """Thema einer Erweiterung <-> MQTT-Thema. reverse: MQTT-Thema -> Thema (oder None)."""
+    prefix = "klassenzimmer-x/"
+    if reverse:
+        return topic[len(prefix):] if topic.startswith(prefix) else None
+    return prefix + topic
+
+
 def relay_topics(key, peer_id):
     """MQTT-Themen: eins für alle in der Klasse, eins nur für mich.
     Aus dem Schlüssel berechnet, damit sie den Code nicht verraten."""
@@ -506,7 +519,7 @@ def set_autostart(enabled):
 
 COMMANDS = ("show", "toggle", "status", "quit")
 # Befehle mit Text dahinter, z.B. "hilfe Aufgabe 3" (für Leisten-Panels wie Omarchy)
-ARG_COMMANDS = ("hilfe", "erledigt", "entfernen")
+ARG_COMMANDS = ("hilfe", "erledigt", "entfernen", "erweiterung")
 MAX_CONTROL = 1024                 # Bytes pro Steuerbefehl
 
 
@@ -758,6 +771,7 @@ class Network:
         self.mcast = False                # Multicast klappt hier wirklich (nach start)
         self.relay = relay                # Internet-Weg (TEIL 5b) oder None
         self.topic_all = self.topic_me = None
+        self.raw_listeners = {}           # Erweiterungen: Thema -> fn(daten)
         self.next_relay_heartbeat = 0.0
         self.lock = threading.Lock()      # schützt me, pending, seen, known
         self.running = False
@@ -920,6 +934,9 @@ class Network:
     def _handle(self, data, addr):
         if self.loss and random.random() < self.loss:
             return                                   # Paketverlust simulieren
+        if data.startswith(RAW_MAGIC):
+            self._handle_raw(data)                   # Paket einer Erweiterung
+            return
         msg = decode(data, self.key)
         if msg is None or msg["from"] == self.me["peer_id"]:
             return               # ungültig, andere Klasse (anderer Code) oder von mir
@@ -1019,6 +1036,10 @@ class Network:
         self.relay.publish(topic, seal(encode(msg, self.key), self.key))
 
     def _from_relay(self, topic, payload):
+        fn = self.raw_listeners.get(raw_relay_topic(topic, reverse=True))
+        if fn:
+            fn(payload)
+            return
         data = unseal(payload, self.key)
         if data is not None and self.running:
             self._handle(data, (RELAY_IP, 0))
@@ -1028,6 +1049,41 @@ class Network:
             with self.lock:                      # gleich melden, wer wir sind
                 self.next_heartbeat = self.next_relay_heartbeat = 0.0
         self.events.put(("internet", connected))
+
+    # ---- Rohe Pakete für Erweiterungen (TEIL 8) -----------------------------------
+    # Format im WLAN: "KZX" + Länge des Themas (1 Byte) + Thema + Daten.
+    # Übers Internet: Daten im MQTT-Thema raw_relay_topic(thema).
+    # Die App prüft hier nichts: Verschlüsseln und Signieren macht die Erweiterung.
+    def listen_raw(self, topic, fn):
+        """fn(daten) für jedes Paket mit diesem Thema (läuft im Netzwerk-Thread)."""
+        if not RAW_TOPIC.fullmatch(topic):
+            raise ValueError("Thema: 1-40 Zeichen a-z, 0-9, - oder _")
+        self.raw_listeners[topic] = fn
+        if self.relay:
+            self.relay.add_topic(raw_relay_topic(topic))
+
+    def send_raw(self, topic, data):
+        """An alle: Broadcast, Multicast und Internet."""
+        if not RAW_TOPIC.fullmatch(topic) or len(data) > MAX_PACKET:
+            raise ValueError("Thema ungültig oder Paket zu gross")
+        packet = RAW_MAGIC + bytes([len(topic)]) + topic.encode() + data
+        for addr in [(self.broadcast_addr, DISCOVERY_PORT)] + \
+                    ([(MULTICAST_GROUP, DISCOVERY_PORT)] if self.mcast else []):
+            try:
+                self.usock.sendto(packet, addr)
+            except OSError as e:
+                if self.running:
+                    self.events.put(("log", "Senden an %s fehlgeschlagen: %s" % (addr[0], e)))
+        if self.relay and self.running:
+            self.relay.publish(raw_relay_topic(topic), data)
+
+    def _handle_raw(self, data):
+        n = data[len(RAW_MAGIC)] if len(data) > len(RAW_MAGIC) else 0
+        start = len(RAW_MAGIC) + 1
+        topic = data[start:start + n].decode("ascii", "replace")
+        fn = self.raw_listeners.get(topic)
+        if fn and len(data) > start + n:
+            fn(data[start + n:])
 
     def _forget_old_ids(self):
         limit = now() - SEEN_KEEP
@@ -1168,14 +1224,23 @@ class Relay:
         self.running = False
         self.connected = False
         self.thread = None
+        self.topics = []
+        self.resubscribe = False          # neue Themen dazugekommen -> nochmal SUBSCRIBE
+        self.packet_id = 0
 
     # ---- für Network -----------------------------------------------------------
     def start(self, topics, on_message, on_state=None, log=print):
-        self.topics, self.on_message = list(topics), on_message
+        self.topics, self.on_message = list(topics) + self.topics, on_message
         self.on_state, self.log = on_state or (lambda connected: None), log
         self.running = True
         self.thread = threading.Thread(target=self._loop, daemon=True)
         self.thread.start()
+
+    def add_topic(self, topic):
+        """Später noch ein Thema abonnieren (z.B. für eine Erweiterung)."""
+        if topic not in self.topics:
+            self.topics.append(topic)
+            self.resubscribe = True
 
     def publish(self, topic, payload):
         """Nur in die Warteschlange (der Relay-Thread schickt es).
@@ -1256,7 +1321,10 @@ class Relay:
     def _session(self, sock):
         sock.settimeout(0.1)
         last_rx = last_ping = time.monotonic()
+        self.got_connack = False
         while True:
+            if self.got_connack and self.resubscribe:
+                self._subscribe(sock)
             # 1. Senden, was in der Warteschlange liegt
             while True:
                 try:
@@ -1301,13 +1369,19 @@ class Relay:
                 first, body, self.mbuf = packet
                 self._on_packet(sock, first, body)
 
+    def _subscribe(self, sock):
+        self.resubscribe = False
+        self.packet_id = self.packet_id % 65535 + 1
+        filters = b"".join(mqtt_string(t) + b"\x00" for t in list(self.topics))  # QoS 0
+        sock.sendall(ws_frame(mqtt_packet(0x82, struct.pack("!H", self.packet_id) + filters)))
+
     def _on_packet(self, sock, first, body):
         kind = first >> 4
         if kind == 2:                                                     # CONNACK
             if len(body) < 2 or body[1] != 0:
                 raise OSError("Vermittler lehnt Anmeldung ab (Code %s)" % (body[1:2].hex() or "?"))
-            filters = b"".join(mqtt_string(t) + b"\x00" for t in self.topics)
-            sock.sendall(ws_frame(mqtt_packet(0x82, struct.pack("!H", 1) + filters)))   # SUBSCRIBE
+            self.got_connack = True
+            self._subscribe(sock)
         elif kind == 9:                                                   # SUBACK
             if not self.connected:
                 self.connected = True
@@ -1412,10 +1486,18 @@ class MiniBar:
                     padx=6, pady=1).pack(side="left", padx=(4, 0))
 
         menu = tk.Menu(w, tearoff=0)
-        menu.add_command(label="Fenster öffnen", command=app.show_window)
-        menu.add_command(label="Status wechseln", command=app.toggle_status)
-        menu.add_separator()
-        menu.add_command(label="Beenden", command=app.quit)
+
+        def fill_menu():                         # bei jedem Öffnen neu (Erweiterung, TEIL 8)
+            menu.delete(0, "end")
+            menu.add_command(label="Fenster öffnen", command=app.show_window)
+            menu.add_command(label="Status wechseln", command=app.toggle_status)
+            if app.ext_buttons:
+                menu.add_separator()
+                for button_id, text, fn in app.ext_buttons:
+                    menu.add_command(label=text, command=lambda f=fn: app.ext_call(f))
+            menu.add_separator()
+            menu.add_command(label="Beenden", command=app.quit)
+        menu.configure(postcommand=fill_menu)
         for widget in (w, inner, grip, self.dot, name, self.action):
             widget.bind("<Button-3>", lambda e: menu.tk_popup(e.x_root, e.y_root))
             widget.bind("<Button-2>", lambda e: menu.tk_popup(e.x_root, e.y_root))  # Mac
@@ -1469,6 +1551,9 @@ class App:
         self.request_info = ""         # z.B. "Kein Coach online."
         # Internet-Weg: None = aus, sonst True/False = verbunden/getrennt
         self.internet = None if net.relay is None else False
+        self.extension = None          # Name der geladenen Erweiterung (TEIL 8)
+        self.ext_buttons = []          # [(id, text, fn)]
+        self.ext_info = []
 
         self.peers = {}                # peer_id -> {name, role, status, ip, port, last_seen}
         self.queue = []                # Coach: offene Anfragen, älteste zuerst
@@ -1499,7 +1584,7 @@ class App:
 
     # ---- Aufbau -------------------------------------------------------------
     def _build(self):
-        top = tk.Frame(self.root, bg=BG, padx=12, pady=10)
+        top = self.top_frame = tk.Frame(self.root, bg=BG, padx=12, pady=10)
         top.pack(fill="x")
         info = tk.Frame(top, bg=BG)
         info.pack(side="left")
@@ -1537,6 +1622,9 @@ class App:
         self.canvas.pack(side="left", fill="both", expand=True)
         bar.pack(side="right", fill="y")
 
+        # Knöpfe einer Erweiterung (TEIL 8), erst sichtbar, wenn es welche gibt
+        self.ext_frame = tk.Frame(self.root, bg=BG, padx=12, pady=6)
+
         ttk.Separator(self.root).pack(fill="x")
         bottom = tk.Frame(self.root, bg=BG, padx=12, pady=10)
         bottom.pack(fill="x")
@@ -1545,6 +1633,47 @@ class App:
         else:
             self._build_coach(bottom)
         self._render_peers()
+
+    # ---- Erweiterung (TEIL 8) ---------------------------------------------------
+    def ext_add_button(self, button_id, text, fn):
+        self.ext_buttons = [b for b in self.ext_buttons if b[0] != button_id] + [(button_id, text, fn)]
+        self._render_ext()
+
+    def ext_set_info(self, lines):
+        if lines != self.ext_info:
+            self.ext_info = lines
+            self._render_ext()
+
+    def ext_call(self, fn, *args):
+        try:
+            fn(*args)
+        except Exception as e:                   # Fehler der Erweiterung: App läuft weiter
+            print("Fehler in der Erweiterung: %s: %s" % (type(e).__name__, e))
+
+    def ext_click(self, button_id):
+        for b in self.ext_buttons:
+            if b[0] == button_id:
+                self.ext_call(b[2])
+
+    def _render_ext(self):
+        for w in self.ext_frame.winfo_children():
+            w.destroy()
+        if not (self.ext_buttons or self.ext_info):
+            self.ext_frame.pack_forget()
+            return
+        if not self.ext_frame.winfo_ismapped():
+            self.ext_frame.pack(fill="x", after=self.top_frame)   # gleich unter dem Kopf
+        for line in self.ext_info:
+            tk.Label(self.ext_frame, text=line, bg=BG, fg="#b45309", anchor="w", justify="left",
+                     wraplength=380).pack(fill="x")
+        row = tk.Frame(self.ext_frame, bg=BG)
+        row.pack(fill="x", pady=(4, 0))
+        for i, (button_id, text, fn) in enumerate(self.ext_buttons):
+            ColorButton(row, text, lambda f=fn: self.ext_call(f), bg="#eeeeee", hover="#e0e0e0",
+                        padx=8, pady=3).grid(row=i // 3, column=i % 3, sticky="we", padx=2, pady=2)
+        for c in range(3):
+            row.grid_columnconfigure(c, weight=1)
+        self._update_small_views()
 
     def _build_student(self, parent):
         tk.Label(parent, text="Frage (optional):", bg=BG, anchor="w").pack(fill="x")
@@ -1701,6 +1830,8 @@ class App:
                         self.mark_done(arg)
                     elif ev[1] == "entfernen":
                         self.remove_peer(arg, ask=False)
+                    elif ev[1] == "erweiterung":
+                        self.ext_click(arg)
                     else:
                         {"show": self.show_window, "toggle": self.toggle_window,
                          "status": self.toggle_status, "quit": self.quit}[ev[1]]()
@@ -1709,6 +1840,8 @@ class App:
                 elif kind == "internet":
                     self.internet = ev[1]
                     changed.add("peers")
+                elif kind == "ext":
+                    self.ext_call(ev[1], ev[2])
                 elif kind == "log":
                     print(ev[1])
         except queue.Empty:
@@ -1829,6 +1962,9 @@ class App:
             "max_tries": MAX_TRIES,
             "info": self.request_info,
             "internet": self.internet,
+            **({"extra": {"title": self.extension,
+                          "buttons": [{"id": b[0], "text": b[1]} for b in self.ext_buttons],
+                          "info": self.ext_info}} if self.ext_buttons or self.ext_info else {}),
         }
 
     def _render_peers(self):
@@ -1893,6 +2029,115 @@ class App:
             color, t = texts[r["state"]]
             tk.Label(self.request_frame, text="%s: %s" % (r["coach"], t.format(tries=r["tries"])),
                      bg=BG, fg=color, anchor="w").pack(fill="x")
+
+
+# ===========================================================================
+# TEIL 8: Erweiterungen
+# ===========================================================================
+# Wer mehr Knöpfe will, legt eine Datei erweiterung.py in den Einstellungs-Ordner
+# (neben einstellungen.json, siehe TEIL 2). Gibt es sie, lädt die App sie beim
+# Start und ruft setup(api) auf. Ohne Datei passiert nichts. Eine kaputte
+# Erweiterung stoppt die App nicht, sie wird nur nicht geladen.
+#
+# Was eine Erweiterung mit api machen kann:
+#   api.me, api.key, api.lib     wer bin ich, Schlüssel der Klasse, dieses Modul
+#   api.button(id, text, fn)     Knopf im Fenster, im Menü der kleinen Leiste und
+#                                im Leisten-Panel (klassenzimmer --erweiterung ID)
+#   api.info(zeilen)             Textzeilen dazu (z.B. ein Countdown)
+#   api.notify(titel, text, dringend=False)   Meldung auf dem Bildschirm
+#   api.listen(thema, fn)        rohe Pakete empfangen, fn(daten) im Hauptthread
+#   api.send(thema, daten)       rohe Pakete an alle (WLAN und Internet)
+#   api.every(sekunden, fn)      regelmässig etwas tun (im Hauptthread)
+# Die App liest die Pakete nicht: Verschlüsseln und Signieren macht die
+# Erweiterung selbst (z.B. mit api.lib.seal und einem eigenen Schlüssel).
+#
+# Achtung: Eine Erweiterung ist Python-Code und darf alles, was die App darf.
+# Nur Dateien aus einer Quelle benutzen, der man vertraut.
+
+EXTENSION_FILE = "erweiterung.py"
+EXTENSION_ENV = "KLASSENZIMMER_ERWEITERUNG"      # anderer Pfad (z.B. zum Testen)
+
+
+def extension_path():
+    p = os.environ.get(EXTENSION_ENV)
+    return Path(p) if p else config_dir() / EXTENSION_FILE
+
+
+def notify(title, text, urgent=False, root=None):
+    """Meldung auf dem Bildschirm: Linux notify-send, Mac Mitteilung,
+    sonst (Windows) ein kleines Fenster, das immer im Vordergrund ist."""
+    try:
+        if SYSTEM == "Linux" and shutil.which("notify-send"):
+            subprocess.Popen(["notify-send", "-a", "Klassenzimmer", "-u", "critical" if urgent else "normal",
+                              title, text], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return
+        if SYSTEM == "Darwin":
+            script = "display notification %s with title %s" % (json.dumps(text), json.dumps(title))
+            subprocess.Popen(["osascript", "-e", script], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return
+    except OSError:
+        pass
+    if root is None:
+        return
+    w = tk.Toplevel(root, bg=ORANGE if urgent else "#333", padx=14, pady=10)
+    w.overrideredirect(True)
+    w.attributes("-topmost", True)
+    tk.Label(w, text=title, bg=w["bg"], fg="white", font=("TkDefaultFont", 11, "bold")).pack(anchor="w")
+    tk.Label(w, text=text, bg=w["bg"], fg="white", justify="left", wraplength=320).pack(anchor="w")
+    w.update_idletasks()
+    w.geometry("+%d+%d" % (w.winfo_screenwidth() - w.winfo_reqwidth() - 30, 80))
+    w.bind("<Button-1>", lambda e: w.destroy())
+    w.after(12000, w.destroy)
+
+
+class ExtensionAPI:
+    def __init__(self, app, net):
+        self._app, self._net = app, net
+        self.me, self.key = app.me, net.key
+        self.lib = sys.modules[__name__]
+
+    def button(self, button_id, text, fn):
+        self._app.ext_add_button(clean_text(button_id, 30), clean_text(text, 40), fn)
+
+    def info(self, lines):
+        self._app.ext_set_info([clean_text(line, 120) for line in lines][:6])
+
+    def notify(self, title, text, urgent=False):
+        notify(clean_text(title, 80), clean_text(text, 300), urgent, self._app.root)
+        if urgent:
+            self._app.root.bell()
+
+    def listen(self, topic, fn):
+        # Netzwerk-Thread -> Queue -> Hauptthread (tkinter-Regel, siehe TEIL 6)
+        self._net.listen_raw(topic, lambda data: self._app.events.put(("ext", fn, data)))
+
+    def send(self, topic, data):
+        self._net.send_raw(topic, data)
+
+    def every(self, seconds, fn):
+        def run():
+            self._app.ext_call(fn)
+            self._app.root.after(int(seconds * 1000), run)
+        self._app.root.after(int(seconds * 1000), run)
+
+
+def load_extension(app, net, path=None):
+    """erweiterung.py laden und setup(api) aufrufen. Gibt den Namen zurück oder None."""
+    path = Path(path) if path else extension_path()
+    if not path.is_file():
+        return None
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("klassenzimmer_erweiterung", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        module.setup(ExtensionAPI(app, net))
+    except Exception as e:                       # kaputte Erweiterung: App läuft weiter
+        print("Erweiterung %s nicht geladen: %s: %s" % (path, type(e).__name__, e))
+        return None
+    name = getattr(module, "NAME", path.stem)
+    print("Erweiterung geladen: %s" % name)
+    return name
 
 
 # ===========================================================================
@@ -2002,6 +2247,7 @@ def main():
                         help="Schüler: der laufenden App sagen, den Coach um Hilfe zu fragen")
     parser.add_argument("--erledigt", metavar="ID", help="Coach: Hilfeanfrage als erledigt markieren")
     parser.add_argument("--entfernen", metavar="ID", help="jemanden aus der Klassenliste entfernen")
+    parser.add_argument("--erweiterung", metavar="ID", help="Knopf einer Erweiterung drücken (TEIL 8)")
     parser.add_argument("--waybar-einrichten", action="store_true",
                         help="Omarchy/Hyprland: Punkt in der Waybar einrichten")
     parser.add_argument("--ansicht", choices=("mini", "waybar", "fenster"),
@@ -2028,7 +2274,7 @@ def main():
               "quit" if args.beenden else None
     command_arg = None
     for name, value in (("hilfe", args.hilfe), ("erledigt", args.erledigt),
-                        ("entfernen", args.entfernen)):
+                        ("entfernen", args.entfernen), ("erweiterung", args.erweiterung)):
         if value is not None:
             command, command_arg = name, value
 
@@ -2121,8 +2367,11 @@ def main():
 
     view = args.ansicht or ("fenster" if test_mode else "waybar" if is_hyprland() else "mini")
     root = tk.Tk()
-    App(root, me, net, events, room_id(key), code, store, view=view,
-        start_hidden=args.autostart or args.speichern, control=control)
+    app = App(root, me, net, events, room_id(key), code, store, view=view,
+              start_hidden=args.autostart or args.speichern, control=control)
+    # Erweiterung: normal aus dem Einstellungs-Ordner, im Testmodus nur mit KLASSENZIMMER_ERWEITERUNG
+    if store or os.environ.get(EXTENSION_ENV):
+        app.extension = load_extension(app, net)
     if control:
         control.start(events)
     try:

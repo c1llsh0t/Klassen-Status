@@ -295,10 +295,14 @@ class FakeRelay:
         self.hub, self.connected = hub, False
 
     def start(self, topics, on_message, on_state=None, log=print):
+        self.on_message = on_message
         self.hub.subs += [(t, on_message) for t in topics]
         self.connected = True
         if on_state:
             on_state(True)
+
+    def add_topic(self, topic):
+        self.hub.subs.append((topic, self.on_message))
 
     def publish(self, topic, payload):
         self.hub.log.append((topic, payload))
@@ -562,6 +566,106 @@ class InternetTest(unittest.TestCase):
         coach = find_peer(qs, "Coach", seconds=15)
         help_id = s.send_help(coach["ip"], coach["port"], "live", to=coach["peer_id"])
         wait_for(qs, "acked", 10, match=lambda ev: ev[1] == help_id)
+
+
+# ---------------------------------------------------------------------------
+# Erweiterungen (TEIL 8)
+# ---------------------------------------------------------------------------
+class ExtensionTest(unittest.TestCase):
+    def setUp(self):
+        self.nodes = []
+        self.hub = FakeHub()
+
+    def tearDown(self):
+        for n, _ in self.nodes:
+            n.stop()
+        time.sleep(0.2)
+
+    def make(self, name, cls=DropNetwork, **kw):
+        me = {"peer_id": K.new_id(), "name": name, "role": "student", "status": "online", "klasse": ""}
+        q = queue.Queue()
+        n = cls(me, q, KEY, **kw)
+        n.start()
+        self.nodes.append((n, q))
+        return n, q
+
+    @staticmethod
+    def receiver(n, topic):
+        got = queue.Queue()
+        n.listen_raw(topic, got.put)
+        return got
+
+    def test_rohe_pakete_im_wlan(self):
+        a, _ = self.make("Lena")
+        b, qb = self.make("Tim")
+        got_b = self.receiver(b, "plus-abc")
+        got_other = self.receiver(b, "anderes")
+        a.send_raw("plus-abc", b"\x00geheim\xff")
+        self.assertEqual(got_b.get(timeout=2), b"\x00geheim\xff")
+        self.assertTrue(got_other.empty())
+        # Normale Nachrichten laufen weiter, rohe Pakete stören sie nicht
+        find_peer(qb, "Lena")
+        for bad in ("", "A", "x" * 41, "ä"):
+            with self.assertRaises(ValueError):
+                a.send_raw(bad, b"x")
+
+    def test_rohe_pakete_uebers_internet(self):
+        a, _ = self.make("Lena", IsolatedNetwork, multicast=False, relay=FakeRelay(self.hub))
+        b, _ = self.make("Tim", IsolatedNetwork, multicast=False, relay=FakeRelay(self.hub))
+        got = self.receiver(b, "plus-abc")
+        a.send_raw("plus-abc", b"hallo")
+        self.assertEqual(got.get(timeout=2), b"hallo")
+        self.assertIn(K.raw_relay_topic("plus-abc"), {t for t, _ in self.hub.log})
+
+    def test_spaeter_abonnieren_beim_echten_relay(self):
+        broker = MiniBroker()
+        self.addCleanup(broker.close)
+        a, qa = self.make("Lena", IsolatedNetwork, multicast=False, relay=K.Relay(broker.url()))
+        b, qb = self.make("Tim", IsolatedNetwork, multicast=False, relay=K.Relay(broker.url()))
+        wait_for(qa, "internet", match=lambda ev: ev[1] is True)
+        wait_for(qb, "internet", match=lambda ev: ev[1] is True)
+        got = self.receiver(b, "plus-abc")          # erst nach dem Verbinden
+        deadline = time.time() + 3
+        while time.time() < deadline:
+            a.send_raw("plus-abc", b"spaet")
+            try:
+                self.assertEqual(got.get(timeout=0.3), b"spaet")
+                break
+            except queue.Empty:
+                pass
+        else:
+            self.fail("Paket kam nicht an")
+
+    def test_steuerbefehl(self):
+        self.assertEqual(K.parse_control("erweiterung warn"), ("erweiterung", "warn"))
+
+    def test_erweiterung_laden(self):
+        class FakeApp:
+            me = {"peer_id": "a1", "name": "Lena", "role": "student"}
+            root = None
+            def __init__(self):
+                self.buttons = []
+            def ext_add_button(self, *b):
+                self.buttons.append(b)
+
+        class FakeNet:
+            key = KEY
+        tmp = Path(tempfile.mkdtemp())
+        good = tmp / "erweiterung.py"
+        good.write_text("NAME = 'Test'\n"
+                        "def setup(api):\n"
+                        "    assert api.lib.seal and api.me['name'] == 'Lena'\n"
+                        "    api.button('a', 'Knopf A', lambda: None)\n", encoding="utf-8")
+        app = FakeApp()
+        self.assertEqual(K.load_extension(app, FakeNet(), good), "Test")
+        self.assertEqual([b[:2] for b in app.buttons], [("a", "Knopf A")])
+        bad = tmp / "kaputt.py"
+        bad.write_text("def setup(api):\n    raise RuntimeError('kaputt')\n", encoding="utf-8")
+        self.assertIsNone(K.load_extension(FakeApp(), FakeNet(), bad))      # App läuft weiter
+        broken = tmp / "syntax.py"
+        broken.write_text("def setup(:\n", encoding="utf-8")
+        self.assertIsNone(K.load_extension(FakeApp(), FakeNet(), broken))
+        self.assertIsNone(K.load_extension(FakeApp(), FakeNet(), tmp / "gibtsnicht.py"))
 
 
 # ---------------------------------------------------------------------------

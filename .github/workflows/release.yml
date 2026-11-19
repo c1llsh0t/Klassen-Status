@@ -92,8 +92,24 @@ jobs:
           make_latest: true
           files: out/*
           body: |
-            Ausführliche Anleitung für Installation und Autostart (und ein Prompt, mit dem Claude alles installiert): siehe README auf der Startseite.
+            ## Installieren
 
-            **Windows:** `Klassenzimmer-Windows.exe` in einen festen Ordner legen und starten. *Weitere Informationen → Trotzdem ausführen*, bei der Firewall *Private Netzwerke → Zulassen*.
-            **Mac (Apple-Chip):** `Klassenzimmer-Mac.zip` entpacken, App in *Programme* ziehen, öffnen, dann *Systemeinstellungen → Datenschutz & Sicherheit → Dennoch öffnen*. Lokales Netzwerk *Erlauben*.
-            **Linux:** `Klassenzimmer-Linux` nach `~/.local/bin/` verschieben, `chmod +x`, starten. Mit ufw: `sudo ufw allow 50505:50506/udp`.
+            **Omarchy** (App + Panel in der Leiste), im Terminal:
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/c1llsh0t/Klassen-Status/main/install-omarchy.sh | bash
+            ```
+
+            **Linux** (Ubuntu, Debian, Mint, Fedora, Arch …), im Terminal:
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/c1llsh0t/Klassen-Status/main/install-linux.sh | bash
+            ```
+
+            **Windows:** `Klassenzimmer-Windows.exe` unten herunterladen, in einen festen Ordner legen und starten. *Weitere Informationen → Trotzdem ausführen*, bei der Firewall *Private Netzwerke → Zulassen*.
+
+            **Mac (Apple-Chip):** `Klassenzimmer-Mac.zip` unten herunterladen, entpacken, App in *Programme* ziehen, öffnen, dann *Systemeinstellungen → Datenschutz & Sicherheit → Dennoch öffnen*. Lokales Netzwerk *Erlauben*.
+
+            **Linux von Hand:** `Klassenzimmer-Linux` nach `~/.local/bin/klassenzimmer` verschieben, `chmod +x`, starten. Mit ufw: `sudo ufw allow 50505:50506/udp`.
+
+            **Aktualisieren:** denselben Befehl nochmal ausführen bzw. die neue Datei laden. Im selben WLAN sollten alle dieselbe Version haben. Ab 2.2 klappt es auch in Schul-WLANs, die Broadcast filtern.
+
+            Ausführliche Anleitung, Fehlersuche und ein Prompt, mit dem Claude alles installiert: [README](https://github.com/c1llsh0t/Klassen-Status#readme)

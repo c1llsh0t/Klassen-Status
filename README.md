@@ -4,7 +4,7 @@ Eine Peer-to-Peer-App fürs Klassenzimmer: Alle Rechner im selben WLAN/LAN sehen
 
 - 🔑 **Beitrittscode:** Der Coach erzeugt einen Code (z.B. `K7Q-M3X`), die Schüler geben ihn ein. Nur wer den Code kennt, gehört zur Klasse.
 - 🟢 online · 🟡 nicht stören · ⚪ offline (20 Sekunden nichts gehört)
-- **klein statt gross:** unter Windows, Mac und Linux eine kleine Leiste am Bildschirmrand, unter **Omarchy** ein Punkt oben in der **Waybar**
+- **klein statt gross:** unter Windows, Mac und Linux eine kleine Leiste am Bildschirmrand, unter **Omarchy** ein Panel oben in der Leiste (wie WLAN und Bluetooth)
 - die Klasse wird gespeichert, sodass am nächsten Tag alle schon in der Liste stehen
 - Autostart beim Anmelden, danach muss man nichts mehr tun
 
@@ -20,6 +20,34 @@ curl -fsSL https://raw.githubusercontent.com/c1llsh0t/Klassen-Status/main/instal
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/c1llsh0t/Klassen-Status/main/install-linux.sh | bash
+```
+
+**Windows / Mac:** Datei aus den **[Releases](../../releases/latest)** laden und starten (Details unten).
+
+**Aktualisieren:** denselben Befehl nochmal ausführen bzw. die neue Datei laden.
+
+### 📣 Zum Weitergeben an die Klasse
+
+Diesen Text kann der Coach in den Klassenchat kopieren (`<CODE>` durch den eigenen Beitrittscode ersetzen):
+
+```text
+Klassenzimmer installieren 🏫
+
+Omarchy (App + Panel oben in der Leiste), im Terminal eingeben:
+curl -fsSL https://raw.githubusercontent.com/c1llsh0t/Klassen-Status/main/install-omarchy.sh | bash
+
+Anderes Linux (Ubuntu, Fedora, Arch …), im Terminal eingeben:
+curl -fsSL https://raw.githubusercontent.com/c1llsh0t/Klassen-Status/main/install-linux.sh | bash
+
+Windows / Mac: Datei herunterladen und starten:
+https://github.com/c1llsh0t/Klassen-Status/releases/latest
+
+Im Startfenster eintragen:
+  Name: dein Name
+  Rolle: Schüler/in
+  Code: <CODE>
+Dann "Los geht's". Danach startet es jeden Tag von selbst.
+Wenn du Hilfe brauchst: Klassenzimmer öffnen und "Coach um Hilfe fragen".
 ```
 
 ---

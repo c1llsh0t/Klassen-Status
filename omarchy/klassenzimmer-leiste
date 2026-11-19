@@ -1,0 +1,100 @@
+#!/bin/bash
+# Klassenzimmer an der Omarchy-Leiste: Hilfsskript für das Leisten-Panel
+# (Plugin c1llsh0t.klassenzimmer). Wird von install-omarchy.sh nach
+# ~/.local/bin/klassenzimmer-leiste kopiert.
+#
+#   klassenzimmer-leiste start        App starten (gespeicherte Einstellungen, sonst Startfenster)
+#   klassenzimmer-leiste einrichten   Startfenster unter dem Zeichen öffnen (Name, Rolle, Code)
+#   klassenzimmer-leiste neu          Klasse wechseln: App beenden, Startfenster mit neuem Code
+#   klassenzimmer-leiste beenden      App beenden
+#
+# Unter Omarchy ist das Panel die Oberfläche. Das grosse Tk-Fenster, das die App
+# nach dem Startfenster öffnet, wird darum gleich wieder versteckt.
+# WICHTIG: Kindprozesse mit 9>&- starten, sonst erbt die App das Lock.
+
+APP="$HOME/.local/bin/klassenzimmer"
+SETTINGS="${XDG_CONFIG_HOME:-$HOME/.config}/klassenzimmer/einstellungen.json"
+exec 9>"${XDG_RUNTIME_DIR:-/tmp}/klassenzimmer-leiste.lock"
+
+d() { hyprctl dispatch "$1" >/dev/null 2>&1; }
+app() { "$APP" "$@" >/dev/null 2>&1 </dev/null 9>&-; }
+app_bg() { setsid -f "$APP" "$@" >/dev/null 2>&1 </dev/null 9>&-; }
+# Läuft die App? Sie hält den Steuer-Port auf 127.0.0.1.
+laeuft() { (exec 3<>"/dev/tcp/127.0.0.1/${KLASSENZIMMER_STEUERPORT:-50507}") 2>/dev/null; }
+# Fensteradresse: Startfenster bzw. grosses Fenster der App
+startfenster() { hyprctl -j clients | jq -r '[.[] | select(.class=="Tk" and .title=="Klassenzimmer – Start")][0].address // empty'; }
+hauptfenster() { hyprctl -j clients | jq -r '[.[] | select(.class=="Tk" and (.title|startswith("Klassenzimmer – ")) and (.title|endswith("– Start")|not))][0].address // empty'; }
+
+# Fenster $1 schwebend unter die Mausposition setzen (dort ist gerade das Zeichen)
+setzen() {
+  local A=$1 C M W X Y MX MW MY RT CX CY
+  read -r CX CY < <(hyprctl -j cursorpos | jq -r '"\(.x | floor) \(.y | floor)"')
+  C=$(hyprctl -j clients | jq -c --arg a "$A" '.[] | select(.address==$a)')
+  [ -z "$C" ] && return
+  [ "$(jq -r .floating <<<"$C")" = true ] || d "hl.dsp.window.float({ action = \"enable\", window = \"address:$A\" })"
+  W=$(jq -r '.size[0]' <<<"$C")
+  M=$(hyprctl -j monitors | jq -c --argjson x "$CX" --argjson y "$CY" '
+        [.[] | . + {lw: (.width / .scale | floor), lh: (.height / .scale | floor)}
+             | select($x >= .x and $x < .x + .lw and $y >= .y and $y < .y + .lh)][0]
+        // ([.[] | select(.focused)][0] | . + {lw: (.width / .scale | floor), lh: (.height / .scale | floor)})')
+  MX=$(jq -r .x <<<"$M"); MY=$(jq -r .y <<<"$M"); MW=$(jq -r .lw <<<"$M"); RT=$(jq -r '.reserved[1]' <<<"$M")
+  X=$((CX - W / 2))
+  (( X > MX + MW - W - 10 )) && X=$((MX + MW - W - 10))
+  (( X < MX + 10 )) && X=$((MX + 10))
+  Y=$((MY + RT + 10))
+  d "hl.dsp.window.move({ x = $X, y = $Y, window = \"address:$A\" })"
+  d "hl.dsp.focus({ window = \"address:$A\" })"
+}
+
+beenden() {
+  laeuft || return 0
+  app --beenden
+  for _ in $(seq 40); do laeuft || return 0; sleep 0.1; done
+  pkill -x klassenzimmer; sleep 0.5
+  pkill -9 -x klassenzimmer 2>/dev/null
+  return 0
+}
+
+# Startfenster öffnen und unter das Zeichen setzen. Nach "Los geht's" das
+# grosse Fenster verstecken (das Panel in der Leiste zeigt alles).
+einrichten() {
+  local A=""
+  laeuft || app_bg
+  for _ in $(seq 50); do A=$(startfenster); [ -n "$A" ] && break; sleep 0.1; done
+  [ -n "$A" ] && setzen "$A"
+  flock -u 9                                  # Lock freigeben, das Warten kann dauern
+  for _ in $(seq 1200); do                    # höchstens 10 Minuten
+    [ -n "$(startfenster)" ] && { sleep 0.5; continue; }
+    laeuft || return 0                        # Startfenster abgebrochen
+    for _ in $(seq 20); do
+      [ -n "$(hauptfenster)" ] && { app --zeigen; return 0; }
+      sleep 0.1
+    done
+    return 0
+  done
+}
+
+case "$1" in
+  start)
+    flock -w 3 9 || exit 0
+    laeuft && exit 0
+    if [ -s "$SETTINGS" ]; then app_bg --autostart; else einrichten; fi
+    ;;
+  einrichten)
+    flock -w 3 9 || exit 0
+    einrichten
+    ;;
+  neu)
+    flock -w 3 9 || exit 0
+    beenden
+    einrichten
+    ;;
+  beenden)
+    flock -w 3 9 || exit 0
+    beenden
+    ;;
+  *)
+    echo "Benutzung: klassenzimmer-leiste start|einrichten|neu|beenden" >&2
+    exit 2
+    ;;
+esac

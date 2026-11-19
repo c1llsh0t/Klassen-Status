@@ -91,6 +91,12 @@ Wir benutzen **UDP**. Das ist wie Postkarten verschicken: schnell und ohne Verbi
 
 Ein **Broadcast** an `255.255.255.255` geht an **alle** Rechner im lokalen Netz. Damit braucht niemand eine Liste von IP-Adressen. Man ruft einfach in den Raum: „Ich bin Lena!“
 
+### Zusätzlich Multicast (ab Version 2.2)
+
+Viele Schul- und Firmen-WLANs **filtern Broadcasts** zwischen den Geräten, lassen aber **Multicast** durch. Das ist derselbe Weg, auf dem Drucker und Chromecast gefunden werden. Darum tritt die App beim Start der Multicast-Gruppe `239.255.50.55` bei (`IP_ADD_MEMBERSHIP` auf `bsock`) und schickt alles, was sie per Broadcast schickt, zusätzlich an diese Gruppe (Port 50505). Ältere Versionen hören nur Broadcast. In so einem WLAN müssen darum alle mindestens Version 2.2 haben.
+
+Manche WLANs sperren auch **direkte** Verbindungen zwischen Geräten („Client Isolation“). Darum gehen `help`, `done` und `ack` direkt an den Empfänger **und** als Kopie an die Multicast-Gruppe. Die Kopie enthält das Feld `"to"` mit der `peer_id` des Empfängers. Alle anderen ignorieren sie. Kommen beide Kopien an, erkennt der Empfänger die zweite an der gleichen `id` als Duplikat (siehe unten). Ältere Versionen ignorieren das Feld `"to"` einfach.
+
 ### Zwei Sockets
 
 ```python

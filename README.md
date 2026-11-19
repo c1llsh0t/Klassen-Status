@@ -267,7 +267,8 @@ Das Fenster-X versteckt das Fenster nur, die App läuft klein weiter. **Beenden*
 2. Sind alle im **selben WLAN**?
 3. Ist die **Firewall** freigegeben? Siehe oben beim jeweiligen System.
 4. Stimmt die **Uhrzeit** am Computer ungefähr? Mehr als 10 Minuten falsch geht nicht, das ist ein Schutz gegen aufgezeichnete Nachrichten.
-5. Manche Schul- und Gäste-WLANs verbieten Verbindungen zwischen Geräten („Client Isolation“). Zum Testen zwei Laptops an denselben Handy-Hotspot hängen.
+5. Haben alle **mindestens Version 2.2**? Viele Schul-WLANs filtern Broadcasts zwischen Geräten. Ab 2.2 sucht die App zusätzlich per Multicast, das kommt dort meistens durch. Aktualisieren: Installer nochmal ausführen bzw. neue Datei aus den Releases holen.
+6. Manche Schul- und Gäste-WLANs sperren auch Multicast zwischen Geräten („Client Isolation“). Zum Testen zwei Laptops an denselben Handy-Hotspot hängen. Klappt es dort, liegt es am WLAN.
 
 ---
 

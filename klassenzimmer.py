@@ -45,6 +45,7 @@ import plistlib
 import queue
 import random
 import re
+import struct
 import secrets
 import shlex
 import shutil
@@ -68,7 +69,7 @@ except ImportError:
         sys.exit(1)
     raise
 
-APP_VERSION = "2.1"
+APP_VERSION = "2.2"
 
 
 # ===========================================================================
@@ -84,6 +85,9 @@ APP_VERSION = "2.1"
 
 DISCOVERY_PORT = 50505        # hier hören alle auf Broadcasts (UDP)
 DIRECT_PORT = 50506           # hier kommen direkte Nachrichten an (help, done, ack).
+# Zusätzlich zum Broadcast: Viele Schul-WLANs filtern Broadcasts zwischen Geräten,
+# lassen Multicast (wie bei Druckern und Chromecast) aber durch.
+MULTICAST_GROUP = "239.255.50.55"
                               # Fest, damit man in der Firewall nur 50505-50506 öffnen muss.
 CONTROL_PORT = int(os.environ.get("KLASSENZIMMER_STEUERPORT", 50507))
                               # TCP auf 127.0.0.1: "läuft schon?" + Befehle (siehe TEIL 4)
@@ -165,16 +169,22 @@ def make_bye(me):
     return _base("bye", me)
 
 
-def make_help(me, text):
-    return {**_base("help", me), "name": me["name"], "text": text[:MAX_TEXT]}
+def _to(to):
+    """Empfänger (peer_id) für direkte Nachrichten. Die Multicast-Kopie geht an
+    alle, so erkennt jeder, ob sie für ihn ist. Ältere Versionen ignorieren das Feld."""
+    return {"to": to} if to else {}
 
 
-def make_done(me, help_id):
-    return {**_base("done", me), "help_id": help_id}
+def make_help(me, text, to=None):
+    return {**_base("help", me), "name": me["name"], "text": text[:MAX_TEXT], **_to(to)}
 
 
-def make_ack(me, msg_id):
-    return {**_base("ack", me), "ack_id": msg_id}
+def make_done(me, help_id, to=None):
+    return {**_base("done", me), "help_id": help_id, **_to(to)}
+
+
+def make_ack(me, msg_id, to=None):
+    return {**_base("ack", me), "ack_id": msg_id, **_to(to)}
 
 
 def _signature(msg, key):
@@ -670,7 +680,7 @@ def setup_waybar():
 
 class Network:
     def __init__(self, me, events, key, broadcast_addr="255.255.255.255", loss=0.0, port=0,
-                 port_fallback=False):
+                 port_fallback=False, multicast=True):
         self.me = me                      # dict: peer_id, name, role, status, klasse
         self.events = events
         self.key = key                    # aus dem Beitrittscode (derive_key)
@@ -678,6 +688,8 @@ class Network:
         self.loss = loss                  # zum Üben: Anteil verlorener Pakete
         self.unicast_port = port          # 0 = Betriebssystem wählt
         self.port_fallback = port_fallback  # Port besetzt -> irgendeinen freien nehmen
+        self.multicast = multicast        # zusätzlich per Multicast senden und hören
+        self.mcast = False                # Multicast klappt hier wirklich (nach start)
         self.lock = threading.Lock()      # schützt me, pending, seen, known
         self.running = False
         self.pending = {}                 # msg_id -> {msg, addr, tries, next}
@@ -696,9 +708,22 @@ class Network:
                 pass
         self.bsock.bind(("", DISCOVERY_PORT))
         self.bsock.settimeout(0.5)       # damit die Threads "running" prüfen können
+        self.mcast = False
+        if self.multicast:
+            # Gruppe beitreten: Dann kommen auch Multicast-Pakete an Port 50505 an
+            try:
+                mreq = struct.pack("4s4s", socket.inet_aton(MULTICAST_GROUP), socket.inet_aton("0.0.0.0"))
+                self.bsock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+                self.mcast = True
+            except OSError as e:
+                self.events.put(("log", "Multicast geht hier nicht (%s), nur Broadcast" % e))
 
         self.usock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.usock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        try:
+            self.usock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)   # nur lokales Netz
+        except OSError:
+            pass
         try:
             try:
                 self.usock.bind(("", self.unicast_port))
@@ -744,13 +769,13 @@ class Network:
             self.me["status"] = status
             self.next_heartbeat = 0.0    # sofort melden
 
-    def send_help(self, ip, port, text):
-        msg = make_help(self.me, text)
+    def send_help(self, ip, port, text, to=None):
+        msg = make_help(self.me, text, to)
         self._send_reliable(msg, (ip, port))
         return msg["id"]
 
-    def send_done(self, ip, port, help_id):
-        self._send_reliable(make_done(self.me, help_id), (ip, port))
+    def send_done(self, ip, port, help_id, to=None):
+        self._send_reliable(make_done(self.me, help_id, to), (ip, port))
 
     # ---- Zuverlässig senden: ACK + Wiederholung ---------------------------
     # 1. senden und in pending merken
@@ -761,7 +786,7 @@ class Network:
         with self.lock:
             self.pending[msg["id"]] = {"msg": msg, "addr": addr, "tries": 1,
                                        "next": now() + ACK_TIMEOUT}
-        self._send(msg, addr)
+        self._send_direct(msg, addr)
         self.events.put(("sending", msg["id"], 1))
 
     def _check_retries(self):
@@ -779,7 +804,7 @@ class Network:
                     p["next"] = t + ACK_TIMEOUT
                     resend.append((p["msg"], p["addr"], p["tries"]))
         for msg, addr, tries in resend:          # senden ausserhalb des Locks
-            self._send(msg, addr)                # gleiche Nachricht, gleiche ID
+            self._send_direct(msg, addr)         # gleiche Nachricht, gleiche ID
             self.events.put(("sending", msg["id"], tries))
         for msg_id in failed:
             self.events.put(("failed", msg_id))
@@ -822,6 +847,8 @@ class Network:
         msg = decode(data, self.key)
         if msg is None or msg["from"] == self.me["peer_id"]:
             return               # ungültig, andere Klasse (anderer Code) oder von mir
+        if msg.get("to") is not None and msg["to"] != self.me["peer_id"]:
+            return               # Multicast-Kopie einer direkten Nachricht an jemand anderen
         t, ip = msg["type"], addr[0]
 
         # Duplikate: schon gesehen? Bei help/done trotzdem ACK senden,
@@ -831,7 +858,7 @@ class Network:
             self.seen[msg["id"]] = now()
         if duplicate:
             if t in ("help", "done"):
-                self._send(make_ack(self.me, msg["id"]), addr)
+                self._send_direct(make_ack(self.me, msg["id"], msg["from"]), addr)
             return
 
         if t == "heartbeat":
@@ -844,6 +871,8 @@ class Network:
                 hb = make_heartbeat(self.me) if is_new else None
             if hb:
                 self._send(hb, (ip, msg["port"]))
+                if self.mcast:
+                    self._send(hb, (MULTICAST_GROUP, DISCOVERY_PORT))
             self.events.put(("peer", {
                 "peer_id": msg["from"], "name": clean_text(msg["name"], MAX_NAME),
                 "role": msg["role"], "status": msg["status"],
@@ -853,13 +882,13 @@ class Network:
                 self.known = {k for k in self.known if k[0] != msg["from"]}
             self.events.put(("bye", msg["from"]))
         elif t == "help":
-            self._send(make_ack(self.me, msg["id"]), addr)
+            self._send_direct(make_ack(self.me, msg["id"], msg["from"]), addr)
             self.events.put(("help", {
                 "help_id": msg["id"], "peer_id": msg["from"],
                 "name": clean_text(msg["name"], MAX_NAME), "text": clean_text(msg["text"], MAX_TEXT),
                 "ip": ip, "port": addr[1]}))
         elif t == "done":
-            self._send(make_ack(self.me, msg["id"]), addr)
+            self._send_direct(make_ack(self.me, msg["id"], msg["from"]), addr)
             self.events.put(("done", msg["help_id"]))
         elif t == "ack":
             with self.lock:
@@ -875,8 +904,17 @@ class Network:
             if self.running:
                 self.events.put(("log", "Senden an %s fehlgeschlagen: %s" % (addr[0], e)))
 
+    def _send_direct(self, msg, addr):
+        """Direkt an eine Adresse und (mit Empfänger) als Kopie per Multicast,
+        falls das WLAN direkte Verbindungen zwischen Geräten sperrt."""
+        self._send(msg, addr)
+        if self.mcast and msg.get("to"):
+            self._send(msg, (MULTICAST_GROUP, DISCOVERY_PORT))
+
     def _broadcast(self, msg):
         self._send(msg, (self.broadcast_addr, DISCOVERY_PORT))
+        if self.mcast:
+            self._send(msg, (MULTICAST_GROUP, DISCOVERY_PORT))
 
     def _forget_old_ids(self):
         limit = now() - SEEN_KEEP
@@ -1176,7 +1214,7 @@ class App:
         text = text[:MAX_TEXT]
         self.requests.clear()          # nur die neueste Anfrage anzeigen
         for c in coaches:              # jedem Coach einzeln, jeder bestätigt selbst
-            help_id = self.net.send_help(c["ip"], c["port"], text)
+            help_id = self.net.send_help(c["ip"], c["port"], text, c.get("peer_id"))
             self.requests[help_id] = {"coach": c["name"], "state": "sending", "tries": 1}
         self._render_requests()
         self._update_small_views()
@@ -1185,7 +1223,7 @@ class App:
         for item in self.queue:
             if item["help_id"] == help_id:
                 self.queue.remove(item)
-                self.net.send_done(item["ip"], item["port"], help_id)
+                self.net.send_done(item["ip"], item["port"], help_id, item.get("peer_id"))
                 break
         self._render_queue()
         self._update_small_views()

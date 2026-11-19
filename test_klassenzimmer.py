@@ -26,16 +26,23 @@ KEY = K.derive_key("K7QM3X")
 # Hilfsmittel
 # ---------------------------------------------------------------------------
 class DropNetwork(K.Network):
-    """Wie Network, verwirft aber absichtlich die ersten N Pakete eines Typs."""
+    """Wie Network, verwirft aber absichtlich die ersten N Nachrichten eines Typs.
+    Eine Nachricht kann doppelt ankommen (direkt + Multicast-Kopie), darum wird die
+    Kopie, die gleich danach kommt, auch verworfen. Eine Wiederholung (gleiche ID,
+    aber erst nach ACK_TIMEOUT) zählt als neuer Versuch."""
 
     def __init__(self, *a, drop=None, **kw):
         super().__init__(*a, **kw)
         self.drop = dict(drop or {})
+        self.dropped = {}                 # msg_id -> Zeitpunkt des Verwerfens
 
     def _handle(self, data, addr):
         msg = K.decode(data, self.key)
+        if msg and time.time() - self.dropped.get(msg["id"], 0) < K.ACK_TIMEOUT / 2:
+            return                                    # Kopie desselben Versuchs
         if msg and self.drop.get(msg["type"], 0) > 0:
             self.drop[msg["type"]] -= 1
+            self.dropped[msg["id"]] = time.time()
             return
         super()._handle(data, addr)
 
@@ -216,6 +223,29 @@ class NetworkTest(unittest.TestCase):
         b, qb = self.make("Tim", "student", port=K.DIRECT_PORT, port_fallback=True)
         self.assertNotEqual(b.me["port"], K.DIRECT_PORT)    # besetzt -> anderer Port
         find_peer(qa, "Tim")
+
+    def test_multicast_wenn_direkt_gesperrt(self):
+        # Schul-WLAN sperrt direkte Verbindungen: Die Kopie per Multicast kommt
+        # trotzdem an, aber nur beim richtigen Empfänger.
+        s, qs = self.make("Lena", "student")
+        c, qc = self.make("Coach", "coach")
+        _, qt = self.make("Tim", "student")
+        if not (s.mcast and c.mcast):
+            self.skipTest("kein Multicast auf diesem Rechner")
+        find_peer(qs, "Coach")
+        help_id = s.send_help("127.0.0.1", 9, "Aufgabe 3?", to=c.me["peer_id"])  # direkt: niemand da
+        ev, _ = wait_for(qc, "help")
+        self.assertEqual(ev[1]["help_id"], help_id)
+        ev, _ = wait_for(qs, "acked")
+        self.assertEqual(ev[1], help_id)
+        self.assertFalse([e for e in collect(qt, 1) if e[0] in ("help", "acked")])
+
+    def test_empfaenger_feld(self):
+        me = {"peer_id": "a1", "name": "Lena", "role": "student", "status": "online", "klasse": ""}
+        self.assertNotIn("to", K.make_help(me, "x"))
+        msg = K.decode(K.encode(K.make_help(me, "x", "c9"), KEY), KEY)
+        self.assertEqual(msg["to"], "c9")          # signiert und gültig
+        self.assertEqual(K.make_ack(me, "m1", "b2")["to"], "b2")
 
     def test_bye_beim_beenden(self):
         a, qa = self.make("Lena", "student")

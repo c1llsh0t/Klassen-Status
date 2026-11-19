@@ -31,11 +31,13 @@ Aufbau dieser Datei (in dieser Reihenfolge lesen!):
   TEIL 3  Autostart                    – beim Anmelden starten
   TEIL 4  Steuerung und Waybar         – "nur einmal starten", Waybar-Modul
   TEIL 5  Netzwerk                     – Broadcast, Heartbeat, ACK, Wiederholung
+  TEIL 5b Internet-Weg                 – falls das WLAN die Geräte voneinander trennt
   TEIL 6  Oberfläche                   – grosses Fenster und kleine Leiste
   TEIL 7  Start                        – Kommandozeile, Startfenster, main()
 """
 
 import argparse
+import base64
 import hashlib
 import hmac
 import json
@@ -50,12 +52,14 @@ import secrets
 import shlex
 import shutil
 import socket
+import ssl
 import subprocess
 import sys
 import threading
 import time
 import uuid
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 try:
     import tkinter as tk
@@ -69,7 +73,7 @@ except ImportError:
         sys.exit(1)
     raise
 
-APP_VERSION = "2.2"
+APP_VERSION = "2.3"
 
 
 # ===========================================================================
@@ -88,6 +92,15 @@ DIRECT_PORT = 50506           # hier kommen direkte Nachrichten an (help, done, 
 # Zusätzlich zum Broadcast: Viele Schul-WLANs filtern Broadcasts zwischen Geräten,
 # lassen Multicast (wie bei Druckern und Chromecast) aber durch.
 MULTICAST_GROUP = "239.255.50.55"
+# Und wenn das WLAN die Geräte ganz voneinander trennt (Client-Isolation, z.B. im
+# Schul-WLAN BbcBYOD), geht gar nichts direkt, auch kein Multicast. Dann zusätzlich
+# übers Internet: über einen öffentlichen MQTT-Vermittler, per WebSocket auf Port 443
+# wie eine normale Webseite. Alles ist mit dem Beitrittscode verschlüsselt und
+# signiert, der Vermittler sieht nur Datensalat (siehe TEIL 5b).
+RELAY_URL = "wss://public:public@public.cloud.shiftr.io/"
+RELAY_IP = "internet"         # "Adresse" von jemandem, den wir nur übers Internet hören
+RELAY_HEARTBEAT = 15.0        # übers Internet seltener "Ich bin da" (schont den Vermittler)
+OFFLINE_AFTER_INTERNET = 50.0 # ... und darum später grau
                               # Fest, damit man in der Firewall nur 50505-50506 öffnen muss.
 CONTROL_PORT = int(os.environ.get("KLASSENZIMMER_STEUERPORT", 50507))
                               # TCP auf 127.0.0.1: "läuft schon?" + Befehle (siehe TEIL 4)
@@ -253,6 +266,54 @@ def decode(data, key):
     else:
         ok = False
     return msg if ok else None
+
+
+# Fürs Internet zusätzlich verschlüsseln: Die Signatur (mac) schützt nur vor
+# Fälschungen, Name und Hilfetext wären sonst lesbar. Verfahren: HMAC-SHA256 als
+# Schlüsselstrom (Zähler-Modus), jedes Paket mit eigener Zufallszahl (nonce).
+# Ob nichts verändert wurde, prüft danach decode() über die Signatur.
+SEAL_MAGIC = b"KZ1"
+SEAL_NONCE = 16
+
+
+def _sub_key(key, purpose):
+    return hmac.new(key, purpose, hashlib.sha256).digest()
+
+
+def _keystream(key, nonce, n):
+    k = _sub_key(key, b"internet-verschluesselung")
+    out = bytearray()
+    counter = 0
+    while len(out) < n:
+        out += hmac.new(k, nonce + counter.to_bytes(4, "big"), hashlib.sha256).digest()
+        counter += 1
+    return bytes(out[:n])
+
+
+def _xor(data, stream):
+    return (int.from_bytes(data, "big") ^ int.from_bytes(stream, "big")).to_bytes(len(data), "big")
+
+
+def seal(data, key):
+    """Signierte Bytes -> verschlüsselte Bytes fürs Internet."""
+    nonce = os.urandom(SEAL_NONCE)
+    return SEAL_MAGIC + nonce + _xor(data, _keystream(key, nonce, len(data)))
+
+
+def unseal(blob, key):
+    """Gegenstück zu seal(). None, wenn es kein Paket von uns ist."""
+    head = len(SEAL_MAGIC) + SEAL_NONCE
+    if not isinstance(blob, bytes) or not blob.startswith(SEAL_MAGIC) or not head < len(blob) <= head + MAX_PACKET:
+        return None
+    nonce, body = blob[len(SEAL_MAGIC):head], blob[head:]
+    return _xor(body, _keystream(key, nonce, len(body)))
+
+
+def relay_topics(key, peer_id):
+    """MQTT-Themen: eins für alle in der Klasse, eins nur für mich.
+    Aus dem Schlüssel berechnet, damit sie den Code nicht verraten."""
+    root = "klassenzimmer/" + _sub_key(key, b"internet-thema").hex()[:24]
+    return root + "/alle", root + "/" + hmac.new(key, peer_id.encode(), hashlib.sha256).hexdigest()[:16]
 
 
 # ===========================================================================
@@ -676,11 +737,16 @@ def setup_waybar():
 #   ("sending", id, n)  Nachricht wird gesendet, Versuch n
 #   ("acked", id, von)  Nachricht wurde bestätigt
 #   ("failed", id)      nach 5 Versuchen keine Bestätigung
+#   ("internet", bool)  Internet-Weg verbunden / getrennt (TEIL 5b)
 #   ("log", text)       Info für die Konsole
+#
+# Mit relay (TEIL 5b) geht zusätzlich alles übers Internet. Wen wir nur dort
+# hören, hat die "Adresse" (RELAY_IP, 0). Doppelt ankommende Nachrichten
+# (WLAN und Internet) fallen bei der Duplikat-Erkennung (seen) weg.
 
 class Network:
     def __init__(self, me, events, key, broadcast_addr="255.255.255.255", loss=0.0, port=0,
-                 port_fallback=False, multicast=True):
+                 port_fallback=False, multicast=True, relay=None):
         self.me = me                      # dict: peer_id, name, role, status, klasse
         self.events = events
         self.key = key                    # aus dem Beitrittscode (derive_key)
@@ -690,6 +756,9 @@ class Network:
         self.port_fallback = port_fallback  # Port besetzt -> irgendeinen freien nehmen
         self.multicast = multicast        # zusätzlich per Multicast senden und hören
         self.mcast = False                # Multicast klappt hier wirklich (nach start)
+        self.relay = relay                # Internet-Weg (TEIL 5b) oder None
+        self.topic_all = self.topic_me = None
+        self.next_relay_heartbeat = 0.0
         self.lock = threading.Lock()      # schützt me, pending, seen, known
         self.running = False
         self.pending = {}                 # msg_id -> {msg, addr, tries, next}
@@ -748,6 +817,10 @@ class Network:
         self.me["port"] = self.usock.getsockname()[1]
 
         self.running = True
+        if self.relay:
+            self.topic_all, self.topic_me = relay_topics(self.key, self.me["peer_id"])
+            self.relay.start([self.topic_all, self.topic_me], self._from_relay, self._relay_state,
+                             lambda text: self.events.put(("log", text)))
         for target, args in ((self._receive_loop, (self.bsock,)),
                              (self._receive_loop, (self.usock,)),
                              (self._timer_loop, ())):
@@ -762,12 +835,15 @@ class Network:
         self.running = False
         self.bsock.close()
         self.usock.close()
+        if self.relay:
+            self.relay.stop()            # schickt vorher noch das "bye"
 
     # ---- Für die Oberfläche ----------------------------------------------
     def set_status(self, status):
         with self.lock:
             self.me["status"] = status
             self.next_heartbeat = 0.0    # sofort melden
+            self.next_relay_heartbeat = 0.0
 
     def send_help(self, ip, port, text, to=None):
         msg = make_help(self.me, text, to)
@@ -869,7 +945,10 @@ class Network:
                 is_new = key not in self.known
                 self.known.add(key)
                 hb = make_heartbeat(self.me) if is_new else None
-            if hb:
+            if hb and ip == RELAY_IP:
+                hb["to"] = msg["from"]        # übers Internet nur an den Neuen
+                self._publish(hb)
+            elif hb:
                 self._send(hb, (ip, msg["port"]))
                 if self.mcast:
                     self._send(hb, (MULTICAST_GROUP, DISCOVERY_PORT))
@@ -898,6 +977,9 @@ class Network:
 
     # ---- Hilfsfunktionen ------------------------------------------------------
     def _send(self, msg, addr):
+        if addr[0] == RELAY_IP:
+            self._publish(msg)
+            return
         try:
             self.usock.sendto(encode(msg, self.key), addr)
         except OSError as e:
@@ -908,13 +990,44 @@ class Network:
         """Direkt an eine Adresse und (mit Empfänger) als Kopie per Multicast,
         falls das WLAN direkte Verbindungen zwischen Geräten sperrt."""
         self._send(msg, addr)
-        if self.mcast and msg.get("to"):
-            self._send(msg, (MULTICAST_GROUP, DISCOVERY_PORT))
+        if msg.get("to") and addr[0] != RELAY_IP:
+            if self.mcast:
+                self._send(msg, (MULTICAST_GROUP, DISCOVERY_PORT))
+            self._publish(msg)                   # und übers Internet
 
     def _broadcast(self, msg):
         self._send(msg, (self.broadcast_addr, DISCOVERY_PORT))
         if self.mcast:
             self._send(msg, (MULTICAST_GROUP, DISCOVERY_PORT))
+        if self.relay:
+            if msg["type"] == "heartbeat":
+                with self.lock:
+                    due = now() >= self.next_relay_heartbeat
+                    if due:
+                        self.next_relay_heartbeat = now() + RELAY_HEARTBEAT
+                if not due:
+                    return
+            self._publish(msg)
+
+    # ---- Internet-Weg (TEIL 5b) ------------------------------------------------
+    def _publish(self, msg):
+        """Verschlüsselt übers Internet: direkte Nachrichten ins Thema des
+        Empfängers, alles andere ins Thema der ganzen Klasse."""
+        if not self.relay or not self.running:
+            return
+        topic = (relay_topics(self.key, msg["to"])[1] if msg.get("to") else self.topic_all)
+        self.relay.publish(topic, seal(encode(msg, self.key), self.key))
+
+    def _from_relay(self, topic, payload):
+        data = unseal(payload, self.key)
+        if data is not None and self.running:
+            self._handle(data, (RELAY_IP, 0))
+
+    def _relay_state(self, connected):
+        if connected:
+            with self.lock:                      # gleich melden, wer wir sind
+                self.next_heartbeat = self.next_relay_heartbeat = 0.0
+        self.events.put(("internet", connected))
 
     def _forget_old_ids(self):
         limit = now() - SEEN_KEEP
@@ -922,6 +1035,293 @@ class Network:
             for msg_id, t in list(self.seen.items()):
                 if t < limit:
                     del self.seen[msg_id]
+
+
+# ===========================================================================
+# TEIL 5b: Internet-Weg – falls das WLAN die Geräte voneinander trennt
+# ===========================================================================
+# Manche WLANs (Schulen, Firmen, Hotels) lassen Geräte nicht miteinander reden
+# ("Client-Isolation"): kein Broadcast, kein Multicast, nicht einmal ein Ping.
+# Ins Internet kommt aber jeder. Darum verbindet sich die App zusätzlich mit
+# einem öffentlichen MQTT-Vermittler (Publish/Subscribe):
+#
+#     App A --publish("…/alle", Paket)--> Vermittler --> alle, die "…/alle" abonniert haben
+#
+# - Verbindung: WebSocket über TLS auf Port 443 (wie https), das lassen auch
+#   strenge Firewalls durch. MQTT 3.1.1 ist einfach genug für die
+#   Standardbibliothek: CONNECT, SUBSCRIBE, PUBLISH, PINGREQ.
+# - Datenschutz: Jedes Paket ist mit dem Beitrittscode verschlüsselt (seal) und
+#   signiert (encode). Die Themen sind aus dem Code berechnet (relay_topics).
+#   Der Vermittler sieht nur, dass jemand Datensalat schickt.
+# - Ein einziger Thread macht alles mit dem Socket (lesen, senden, Ping).
+#   Andere Threads legen ihre Pakete nur in eine Warteschlange.
+# - Bricht die Verbindung ab: neu verbinden, Wartezeit 1, 2, 4 … höchstens 60 s.
+
+CA_FILES = ("/etc/ssl/certs/ca-certificates.crt",   # Debian, Ubuntu, Arch
+            "/etc/pki/tls/certs/ca-bundle.crt",     # Fedora
+            "/etc/ssl/ca-bundle.pem",               # openSUSE
+            "/etc/ssl/cert.pem")                    # macOS, Alpine
+
+
+def tls_context():
+    """TLS mit Zertifikatsprüfung. Eine mit PyInstaller gebaute App sucht die
+    Zertifikate oft am Ort des Build-Rechners, darum die üblichen Orte dazu."""
+    ctx = ssl.create_default_context()
+    for path in CA_FILES:
+        if os.path.isfile(path):
+            try:
+                ctx.load_verify_locations(path)
+                break
+            except (OSError, ssl.SSLError):
+                pass
+    return ctx
+
+
+def mqtt_string(text):
+    data = text.encode("utf-8") if isinstance(text, str) else text
+    return struct.pack("!H", len(data)) + data
+
+
+def mqtt_packet(first, body):
+    """Feste Kopfzeile: Typ-Byte + Länge (7 Bit pro Byte, oberstes Bit = "es geht weiter")."""
+    n, length = len(body), b""
+    while True:
+        n, digit = divmod(n, 128)
+        length += bytes([digit | (0x80 if n else 0)])
+        if not n:
+            return bytes([first]) + length + body
+
+
+def mqtt_parse(buf):
+    """Ein ganzes MQTT-Paket vorne aus buf: (typ_byte, inhalt, rest) oder None."""
+    n, mult, i = 0, 1, 1
+    while True:
+        if i >= len(buf):
+            return None
+        digit = buf[i]
+        n += (digit & 0x7F) * mult
+        mult *= 128
+        i += 1
+        if not digit & 0x80:
+            break
+        if i > 4:
+            raise ValueError("MQTT-Länge kaputt")
+    if len(buf) < i + n:
+        return None
+    return buf[0], buf[i:i + n], buf[i + n:]
+
+
+def ws_frame(data, opcode=0x2):
+    """WebSocket-Frame vom Client: immer maskiert (so will es RFC 6455)."""
+    n = len(data)
+    if n < 126:
+        head = bytes([0x80 | opcode, 0x80 | n])
+    elif n < 65536:
+        head = bytes([0x80 | opcode, 0x80 | 126]) + struct.pack("!H", n)
+    else:
+        head = bytes([0x80 | opcode, 0x80 | 127]) + struct.pack("!Q", n)
+    mask = os.urandom(4)
+    return head + mask + _xor(data, (mask * (n // 4 + 1))[:n])
+
+
+def ws_parse(buf):
+    """Ein ganzes WebSocket-Frame vorne aus buf: (opcode, daten, rest) oder None."""
+    if len(buf) < 2:
+        return None
+    op, n, i = buf[0] & 0x0F, buf[1] & 0x7F, 2
+    if n == 126:
+        if len(buf) < 4:
+            return None
+        n, i = struct.unpack("!H", buf[2:4])[0], 4
+    elif n == 127:
+        if len(buf) < 10:
+            return None
+        n, i = struct.unpack("!Q", buf[2:10])[0], 10
+    if n > 1 << 20:
+        raise ValueError("WebSocket-Frame zu gross")
+    mask = None
+    if buf[1] & 0x80:
+        mask, i = buf[i:i + 4], i + 4
+    if len(buf) < i + n:
+        return None
+    data = buf[i:i + n]
+    if mask:
+        data = _xor(data, (mask * (n // 4 + 1))[:n])
+    return op, data, buf[i + n:]
+
+
+class Relay:
+    """MQTT über WebSocket. url z.B. wss://benutzer:passwort@host/pfad
+    (ws:// ohne Verschlüsselung nur für Tests und eigene Vermittler im LAN)"""
+
+    def __init__(self, url=RELAY_URL, keepalive=30):
+        u = urlsplit(url)
+        if u.scheme not in ("wss", "ws") or not u.hostname:
+            raise ValueError("Internet-Adresse muss mit wss:// anfangen: %r" % url)
+        self.tls = u.scheme == "wss"
+        self.host, self.port = u.hostname, u.port or (443 if self.tls else 80)
+        self.path = (u.path or "/") + ("?" + u.query if u.query else "")
+        self.user = unquote(u.username) if u.username else None
+        self.password = unquote(u.password) if u.password else None
+        self.keepalive = keepalive
+        self.outbox = queue.Queue(maxsize=500)
+        self.running = False
+        self.connected = False
+        self.thread = None
+
+    # ---- für Network -----------------------------------------------------------
+    def start(self, topics, on_message, on_state=None, log=print):
+        self.topics, self.on_message = list(topics), on_message
+        self.on_state, self.log = on_state or (lambda connected: None), log
+        self.running = True
+        self.thread = threading.Thread(target=self._loop, daemon=True)
+        self.thread.start()
+
+    def publish(self, topic, payload):
+        """Nur in die Warteschlange (der Relay-Thread schickt es).
+        Ohne Verbindung wird verworfen, Heartbeats und Wiederholungen kommen ja nach."""
+        if not self.connected:
+            return False
+        try:
+            self.outbox.put_nowait(mqtt_packet(0x30, mqtt_string(topic) + payload))
+            return True
+        except queue.Full:
+            return False
+
+    def stop(self, wait=1.5):
+        """Warteschlange noch leeren (z.B. das "bye"), dann trennen."""
+        self.running = False
+        if self.thread and self.thread is not threading.current_thread():
+            self.thread.join(wait)
+
+    # ---- Relay-Thread ----------------------------------------------------------
+    def _loop(self):
+        wait = 1
+        while self.running:
+            sock = None
+            try:
+                sock = self._connect()
+                wait = 1
+                self._session(sock)
+            except Exception as e:       # auch kaputte Pakete: neu verbinden
+                if self.running:
+                    self.log("Internet: %s" % (str(e) or type(e).__name__))
+            finally:
+                if self.connected:
+                    self.connected = False
+                    self.on_state(False)
+                if sock:
+                    try:
+                        sock.close()
+                    except OSError:
+                        pass
+            end = time.monotonic() + wait
+            while self.running and time.monotonic() < end:
+                time.sleep(0.2)
+            wait = min(wait * 2, 60)
+
+    def _connect(self):
+        raw = socket.create_connection((self.host, self.port), timeout=10)
+        try:
+            sock = tls_context().wrap_socket(raw, server_hostname=self.host) if self.tls else raw
+        except OSError:
+            raw.close()
+            raise
+        key = base64.b64encode(os.urandom(16)).decode()
+        sock.sendall(("GET %s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                      "Sec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n"
+                      "Sec-WebSocket-Protocol: mqtt\r\n\r\n" % (self.path, self.host, key)).encode())
+        head = b""
+        while b"\r\n\r\n" not in head:
+            chunk = sock.recv(4096)
+            if not chunk or len(head) > 16384:
+                sock.close()
+                raise OSError("keine WebSocket-Antwort")
+            head += chunk
+        head, self.rbuf = head.split(b"\r\n\r\n", 1)
+        status = head.split(b"\r\n")[0].decode("latin-1")
+        if status.split(" ")[1:2] != ["101"]:
+            sock.close()
+            raise OSError("WebSocket abgelehnt: %s" % status)
+        self.mbuf = b""
+        flags = 0x02 | (0x80 if self.user else 0) | (0x40 if self.password else 0)   # 0x02 = clean session
+        body = (mqtt_string("MQTT") + bytes([4, flags]) + struct.pack("!H", self.keepalive)
+                + mqtt_string("kz-" + os.urandom(8).hex()))
+        for extra in (self.user, self.password):
+            if extra:
+                body += mqtt_string(extra)
+        sock.sendall(ws_frame(mqtt_packet(0x10, body)))                  # CONNECT
+        return sock
+
+    def _session(self, sock):
+        sock.settimeout(0.1)
+        last_rx = last_ping = time.monotonic()
+        while True:
+            # 1. Senden, was in der Warteschlange liegt
+            while True:
+                try:
+                    packet = self.outbox.get_nowait()
+                except queue.Empty:
+                    break
+                sock.sendall(ws_frame(packet))
+            if not self.running:
+                sock.sendall(ws_frame(mqtt_packet(0xE0, b"")))           # DISCONNECT
+                return
+            # 2. Lebenszeichen, damit der Vermittler (und jedes NAT) die Verbindung offen hält
+            t = time.monotonic()
+            if t - last_ping > self.keepalive / 2:
+                sock.sendall(ws_frame(mqtt_packet(0xC0, b"")))           # PINGREQ
+                last_ping = t
+            if t - last_rx > self.keepalive * 1.5:
+                raise OSError("keine Antwort vom Vermittler")
+            # 3. Empfangen
+            try:
+                chunk = sock.recv(65536)
+            except socket.timeout:
+                continue
+            if not chunk:
+                raise OSError("Verbindung beendet")
+            last_rx = time.monotonic()
+            self.rbuf += chunk
+            while True:
+                frame = ws_parse(self.rbuf)
+                if not frame:
+                    break
+                op, data, self.rbuf = frame
+                if op == 0x8:
+                    raise OSError("Vermittler hat die Verbindung geschlossen")
+                if op == 0x9:
+                    sock.sendall(ws_frame(data, opcode=0xA))             # Ping -> Pong
+                elif op in (0x0, 0x1, 0x2):
+                    self.mbuf += data
+            while True:
+                packet = mqtt_parse(self.mbuf)
+                if not packet:
+                    break
+                first, body, self.mbuf = packet
+                self._on_packet(sock, first, body)
+
+    def _on_packet(self, sock, first, body):
+        kind = first >> 4
+        if kind == 2:                                                     # CONNACK
+            if len(body) < 2 or body[1] != 0:
+                raise OSError("Vermittler lehnt Anmeldung ab (Code %s)" % (body[1:2].hex() or "?"))
+            filters = b"".join(mqtt_string(t) + b"\x00" for t in self.topics)
+            sock.sendall(ws_frame(mqtt_packet(0x82, struct.pack("!H", 1) + filters)))   # SUBSCRIBE
+        elif kind == 9:                                                   # SUBACK
+            if not self.connected:
+                self.connected = True
+                self.log("Internet verbunden (%s)" % self.host)
+                self.on_state(True)
+        elif kind == 3 and self.connected:                                # PUBLISH
+            qos = (first >> 1) & 3
+            n = struct.unpack("!H", body[:2])[0]
+            topic = body[2:2 + n].decode("utf-8", "replace")
+            payload = body[2 + n + (2 if qos else 0):]
+            try:
+                self.on_message(topic, payload)
+            except Exception as e:      # ein Paket darf nie alles stoppen
+                self.log("Fehler bei Internet-Paket: %s" % e)
 
 
 # ===========================================================================
@@ -1067,6 +1467,8 @@ class App:
         self.last_waybar = None
         self.last_state = None
         self.request_info = ""         # z.B. "Kein Coach online."
+        # Internet-Weg: None = aus, sonst True/False = verbunden/getrennt
+        self.internet = None if net.relay is None else False
 
         self.peers = {}                # peer_id -> {name, role, status, ip, port, last_seen}
         self.queue = []                # Coach: offene Anfragen, älteste zuerst
@@ -1304,6 +1706,9 @@ class App:
                          "status": self.toggle_status, "quit": self.quit}[ev[1]]()
                     if ev[1] == "quit":
                         return
+                elif kind == "internet":
+                    self.internet = ev[1]
+                    changed.add("peers")
                 elif kind == "log":
                     print(ev[1])
         except queue.Empty:
@@ -1337,7 +1742,9 @@ class App:
         self.root.after(1000, self._tick)
 
     def _shown_status(self, peer):
-        if peer["last_seen"] is None or time.monotonic() - peer["last_seen"] > OFFLINE_AFTER:
+        # Übers Internet melden sich alle seltener (RELAY_HEARTBEAT), also später grau
+        limit = OFFLINE_AFTER_INTERNET if peer.get("ip") == RELAY_IP else OFFLINE_AFTER
+        if peer["last_seen"] is None or time.monotonic() - peer["last_seen"] > limit:
             return "offline"
         return peer["status"]
 
@@ -1421,6 +1828,7 @@ class App:
                          for r in self.requests.values()],
             "max_tries": MAX_TRIES,
             "info": self.request_info,
+            "internet": self.internet,
         }
 
     def _render_peers(self):
@@ -1429,7 +1837,9 @@ class App:
         if not self.peers:
             hint = "Noch niemand gefunden …"
             if time.monotonic() - self.started > 15:
-                hint += "\nStimmt der Code? Sind alle im selben WLAN?"
+                hint += "\nStimmt der Code? Haben alle Version %s?" % APP_VERSION
+                if self.internet is False:
+                    hint += "\nInternet-Weg: keine Verbindung (nur WLAN)"
             tk.Label(self.peer_frame, text=hint, fg="#777", bg=BG, justify="left").pack(anchor="w")
             return
         for p in sorted(self.peers.values(), key=self._peer_order):
@@ -1602,6 +2012,8 @@ def main():
                         help="Broadcast-Adresse, z.B. 192.168.1.255")
     parser.add_argument("--verlust", type=float, default=0.0,
                         help="zum Üben: Anteil verlorener Pakete, z.B. 0.3")
+    parser.add_argument("--ohne-internet", action="store_true",
+                        help="nur im WLAN suchen, nicht übers Internet (TEIL 5b)")
     parser.add_argument("--version", action="version", version="Klassenzimmer " + APP_VERSION)
     args = parser.parse_args()
 
@@ -1690,8 +2102,17 @@ def main():
     # Normal: fester Port 50506 (gut für Firewalls). Testmodus: zufälliger Port,
     # damit mehrere Apps auf einem PC laufen können.
     port = args.port or (0 if test_mode else DIRECT_PORT)
+    # Internet-Weg: an, ausser --ohne-internet oder KLASSENZIMMER_INTERNET=aus.
+    # Mit KLASSENZIMMER_INTERNET=wss://… geht es über einen anderen Vermittler.
+    relay_url = os.environ.get("KLASSENZIMMER_INTERNET", RELAY_URL).strip()
+    relay = None
+    if not args.ohne_internet and relay_url.lower() not in ("", "aus", "0", "nein", "off"):
+        try:
+            relay = Relay(relay_url)
+        except ValueError as e:
+            print(e)
     net = Network(me, events, key, broadcast_addr=args.broadcast, loss=args.verlust,
-                  port=port, port_fallback=not args.port)
+                  port=port, port_fallback=not args.port, relay=relay)
     try:
         net.start()
     except OSError as e:

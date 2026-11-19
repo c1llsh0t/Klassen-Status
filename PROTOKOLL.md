@@ -59,6 +59,17 @@ Der Coach erzeugt einen Code aus 6 Zeichen, z.B. `K7Q-M3X`. Daraus macht jede Ap
 - Mit `ts` und den gespeicherten IDs kann niemand alte, mitgeschnittene Nachrichten erneut abspielen.
 - **Aber:** Die Nachrichten sind **nicht verschlüsselt**. Wer im WLAN mithört, kann Namen und Fragen lesen.
 
+## Übers Internet (ab Version 2.3)
+
+Dieselben signierten Nachrichten gehen zusätzlich über einen MQTT-Vermittler (siehe ANLEITUNG.md, TEIL 5b). Unterwegs sind sie verschlüsselt:
+
+```
+"KZ1" + nonce (16 Zufallsbytes) + (signierte Nachricht XOR Schlüsselstrom)
+Schlüsselstrom = HMAC-SHA256(k, nonce + Zähler 0, 1, 2 …),  k = HMAC-SHA256(Schlüssel, "internet-verschluesselung")
+```
+
+Themen: `klassenzimmer/<24 Hex-Zeichen>/alle` (heartbeat, bye) und `klassenzimmer/<24 Hex-Zeichen>/<16 Hex-Zeichen pro Person>` (Nachrichten mit `"to"`). Antwortet jemand einem Neuen übers Internet, bekommt sein Heartbeat das Feld `"to"`.
+
 ## Regeln
 
 - Nachrichten, die kein gültiges JSON sind, grösser als 4 KB sind, eine falsche Signatur haben, zu alt sind oder bei denen Felder fehlen, werden einfach ignoriert. Kein Absturz.

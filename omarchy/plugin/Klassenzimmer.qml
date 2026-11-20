@@ -219,6 +219,8 @@ Panel {
       onTextKey: function(t) {
         if (t === "s" || t === "S") root.toggleStatus()
         else if ((t === "h" || t === "H") && root.live && !root.isCoach) questionField.forceActiveFocus()
+        // Taste P: Extras aus-/einblenden (geht auch, wenn sie gerade versteckt sind)
+        else if ((t === "p" || t === "P") && root.live) root.run(["--erweiterung-umschalten"])
       }
 
       Flickable {
@@ -306,6 +308,13 @@ Panel {
                   bordered: true
                   onClicked: root.run(["--erweiterung", modelData.id])
                 }
+              }
+              Button {
+                text: "🙈 Ausblenden"
+                foreground: root.dim
+                bordered: true
+                tooltipText: "Extras verstecken (zum Zeigen: wieder einblenden im Fenster oder Strg+Umschalt+P)"
+                onClicked: root.run(["--erweiterung-umschalten"])
               }
             }
           }

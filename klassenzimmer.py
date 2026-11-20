@@ -74,7 +74,7 @@ except ImportError:
         sys.exit(1)
     raise
 
-APP_VERSION = "2.3"
+APP_VERSION = "2.4"
 
 
 # ===========================================================================
@@ -517,7 +517,7 @@ def set_autostart(enabled):
 #  - So funktionieren auch Befehle wie "klassenzimmer --zeigen", die die
 #    Waybar beim Klick aufruft.
 
-COMMANDS = ("show", "toggle", "status", "quit")
+COMMANDS = ("show", "toggle", "status", "quit", "erweiterung-umschalten")
 # Befehle mit Text dahinter, z.B. "hilfe Aufgabe 3" (für Leisten-Panels wie Omarchy)
 ARG_COMMANDS = ("hilfe", "erledigt", "entfernen", "erweiterung")
 MAX_CONTROL = 1024                 # Bytes pro Steuerbefehl
@@ -1491,7 +1491,7 @@ class MiniBar:
             menu.delete(0, "end")
             menu.add_command(label="Fenster öffnen", command=app.show_window)
             menu.add_command(label="Status wechseln", command=app.toggle_status)
-            if app.ext_buttons:
+            if app.ext_visible():
                 menu.add_separator()
                 for button_id, text, fn in app.ext_buttons:
                     menu.add_command(label=text, command=lambda f=fn: app.ext_call(f))
@@ -1554,6 +1554,8 @@ class App:
         self.extension = None          # Name der geladenen Erweiterung (TEIL 8)
         self.ext_buttons = []          # [(id, text, fn)]
         self.ext_info = []
+        # Erweiterung ausgeblendet? (Knopf 🙈, Strg+Umschalt+P, --erweiterung-umschalten)
+        self.ext_hidden = bool(store.get("erweiterung_versteckt")) if store else False
 
         self.peers = {}                # peer_id -> {name, role, status, ip, port, last_seen}
         self.queue = []                # Coach: offene Anfragen, älteste zuerst
@@ -1573,6 +1575,7 @@ class App:
         root.configure(bg=BG)
         self._build()
         root.protocol("WM_DELETE_WINDOW", self.close_window)
+        root.bind_all("<Control-P>", lambda e: self.ext_toggle_hidden())     # Strg+Umschalt+P
 
         self.mini = MiniBar(self) if view == "mini" else None
         if start_hidden and view != "fenster":
@@ -1655,10 +1658,22 @@ class App:
             if b[0] == button_id:
                 self.ext_call(b[2])
 
+    def ext_visible(self):
+        return bool(self.ext_buttons or self.ext_info) and not self.ext_hidden
+
+    def ext_toggle_hidden(self):
+        """Erweiterung schnell aus- und wieder einblenden. Gespeichert, damit sie
+        auch nach einem Neustart versteckt bleibt. Meldungen kommen weiterhin."""
+        self.ext_hidden = not self.ext_hidden
+        if self.store:
+            self.store.set("erweiterung_versteckt", self.ext_hidden)
+        self._render_ext()
+        self._update_small_views()
+
     def _render_ext(self):
         for w in self.ext_frame.winfo_children():
             w.destroy()
-        if not (self.ext_buttons or self.ext_info):
+        if not self.ext_visible():
             self.ext_frame.pack_forget()
             return
         if not self.ext_frame.winfo_ismapped():
@@ -1668,8 +1683,10 @@ class App:
                      wraplength=380).pack(fill="x")
         row = tk.Frame(self.ext_frame, bg=BG)
         row.pack(fill="x", pady=(4, 0))
-        for i, (button_id, text, fn) in enumerate(self.ext_buttons):
-            ColorButton(row, text, lambda f=fn: self.ext_call(f), bg="#eeeeee", hover="#e0e0e0",
+        buttons = [(text, lambda f=fn: self.ext_call(f)) for _, text, fn in self.ext_buttons]
+        buttons.append(("🙈 Ausblenden", self.ext_toggle_hidden))
+        for i, (text, fn) in enumerate(buttons):
+            ColorButton(row, text, fn, bg="#eeeeee", hover="#e0e0e0",
                         padx=8, pady=3).grid(row=i // 3, column=i % 3, sticky="we", padx=2, pady=2)
         for c in range(3):
             row.grid_columnconfigure(c, weight=1)
@@ -1834,7 +1851,8 @@ class App:
                         self.ext_click(arg)
                     else:
                         {"show": self.show_window, "toggle": self.toggle_window,
-                         "status": self.toggle_status, "quit": self.quit}[ev[1]]()
+                         "status": self.toggle_status, "quit": self.quit,
+                         "erweiterung-umschalten": self.ext_toggle_hidden}[ev[1]]()
                     if ev[1] == "quit":
                         return
                 elif kind == "internet":
@@ -1964,7 +1982,7 @@ class App:
             "internet": self.internet,
             **({"extra": {"title": self.extension,
                           "buttons": [{"id": b[0], "text": b[1]} for b in self.ext_buttons],
-                          "info": self.ext_info}} if self.ext_buttons or self.ext_info else {}),
+                          "info": self.ext_info}} if self.ext_visible() else {}),
         }
 
     def _render_peers(self):
@@ -2059,8 +2077,16 @@ EXTENSION_ENV = "KLASSENZIMMER_ERWEITERUNG"      # anderer Pfad (z.B. zum Testen
 
 
 def extension_path():
+    """Wo liegt die Erweiterung? Zuerst KLASSENZIMMER_ERWEITERUNG, dann der
+    Einstellungs-Ordner, dann eine ins Programm eingebaute (PyInstaller --add-data)."""
     p = os.environ.get(EXTENSION_ENV)
-    return Path(p) if p else config_dir() / EXTENSION_FILE
+    if p:
+        return Path(p)
+    own = config_dir() / EXTENSION_FILE
+    bundled = Path(getattr(sys, "_MEIPASS", "")) / EXTENSION_FILE if getattr(sys, "frozen", False) else None
+    if not own.is_file() and bundled and bundled.is_file():
+        return bundled
+    return own
 
 
 def notify(title, text, urgent=False, root=None):
@@ -2138,6 +2164,61 @@ def load_extension(app, net, path=None):
     name = getattr(module, "NAME", path.stem)
     print("Erweiterung geladen: %s" % name)
     return name
+
+
+def self_test(report_file=""):
+    """Ohne Fenster prüfen, ob das fertige Programm funktioniert (für GitHub
+    Actions nach dem Bauen und zur Fehlersuche): Zertifikate, Internet-Weg
+    hin und zurück, Erweiterung. Exit-Code 0 = alles gut. Unter Windows hat das
+    Programm keine Konsole, darum geht der Bericht auch in eine Datei."""
+    lines, ok = ["Klassenzimmer %s auf %s" % (APP_VERSION, SYSTEM)], True
+    url = os.environ.get("KLASSENZIMMER_INTERNET", RELAY_URL).strip()
+    try:
+        relay = Relay(url)
+        topic = relay_topics(derive_key(new_code()), new_id())[0]
+        marker = os.urandom(16)
+        connected, echoed, errors = threading.Event(), threading.Event(), []
+        relay.start([topic], lambda t, p: echoed.set() if p == marker else None,
+                    lambda c: connected.set() if c else None, log=errors.append)
+        t0 = time.monotonic()
+        if connected.wait(30):
+            relay.publish(topic, marker)
+            if echoed.wait(10):
+                lines.append("Internet-Weg: ok (%s, %d ms)" % (relay.host, (time.monotonic() - t0) * 1000))
+            else:
+                ok = False
+                lines.append("Internet-Weg: verbunden, aber nichts zurückbekommen")
+        else:
+            ok = False
+            lines.append("Internet-Weg: FEHLER %s" % ("; ".join(errors[-3:]) or "keine Verbindung"))
+        relay.stop()
+    except ValueError as e:
+        ok = False
+        lines.append("Internet-Weg: %s" % e)
+    path = extension_path()
+    if path.is_file():
+        try:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("klassenzimmer_erweiterung", path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            if not callable(getattr(module, "setup", None)):
+                raise ValueError("setup(api) fehlt")
+            lines.append("Erweiterung: %s ok (%s)" % (getattr(module, "NAME", path.stem), path))
+        except Exception as e:
+            ok = False
+            lines.append("Erweiterung: FEHLER %s: %s" % (type(e).__name__, e))
+    else:
+        lines.append("Erweiterung: keine")
+    lines.append("Ergebnis: %s" % ("OK" if ok else "FEHLER"))
+    text = "\n".join(lines)
+    try:
+        print(text)                    # unter Windows (--windowed) gibt es keine Konsole
+    except (OSError, ValueError, AttributeError):
+        pass
+    if report_file:
+        Path(report_file).write_text(text + "\n", encoding="utf-8")
+    return 0 if ok else 1
 
 
 # ===========================================================================
@@ -2248,6 +2329,10 @@ def main():
     parser.add_argument("--erledigt", metavar="ID", help="Coach: Hilfeanfrage als erledigt markieren")
     parser.add_argument("--entfernen", metavar="ID", help="jemanden aus der Klassenliste entfernen")
     parser.add_argument("--erweiterung", metavar="ID", help="Knopf einer Erweiterung drücken (TEIL 8)")
+    parser.add_argument("--erweiterung-umschalten", action="store_true",
+                        help="Knöpfe der Erweiterung aus- bzw. wieder einblenden")
+    parser.add_argument("--selbsttest", nargs="?", const="", metavar="DATEI",
+                        help="ohne Fenster prüfen, ob Internet-Weg und Erweiterung gehen (Bericht in DATEI)")
     parser.add_argument("--waybar-einrichten", action="store_true",
                         help="Omarchy/Hyprland: Punkt in der Waybar einrichten")
     parser.add_argument("--ansicht", choices=("mini", "waybar", "fenster"),
@@ -2270,8 +2355,10 @@ def main():
         args.code = new_code()
         print("Neuer Beitrittscode: %s" % format_code(args.code))
 
+    if args.selbsttest is not None:
+        sys.exit(self_test(args.selbsttest))
     command = "toggle" if args.zeigen else "status" if args.status_umschalten else \
-              "quit" if args.beenden else None
+              "quit" if args.beenden else "erweiterung-umschalten" if args.erweiterung_umschalten else None
     command_arg = None
     for name, value in (("hilfe", args.hilfe), ("erledigt", args.erledigt),
                         ("entfernen", args.entfernen), ("erweiterung", args.erweiterung)):
@@ -2308,7 +2395,7 @@ def main():
             print("Port %d ist von einem anderen Programm belegt – "
                   "'nur einmal starten' und Waybar-Klicks funktionieren nicht." % CONTROL_PORT)
             control = None
-        elif command in ("status", "quit") + ARG_COMMANDS:
+        elif command in ("status", "quit", "erweiterung-umschalten") + ARG_COMMANDS:
             control.close()                     # läuft nicht -> nichts zu tun
             print("Klassenzimmer läuft nicht.")
             return

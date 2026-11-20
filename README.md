@@ -310,6 +310,10 @@ Die App sucht zuerst im WLAN. Zusätzlich verbindet sie sich mit einem kostenlos
 
 Liegt im Einstellungs-Ordner (neben `einstellungen.json`) eine Datei `erweiterung.py`, lädt die App sie beim Start. Eine Erweiterung kann eigene Knöpfe und Textzeilen ins Fenster, ins Menü der kleinen Leiste und ins Omarchy-Panel bringen und eigene Nachrichten an die anderen schicken. Wie das geht, steht in `klassenzimmer.py` bei **TEIL 8**. Achtung: Eine Erweiterung ist Python-Code und darf alles, was die App darf. Nur Dateien aus einer Quelle benutzen, der man vertraut.
 
+**Aus- und einblenden:** Die Zusatzknöpfe lassen sich mit dem Knopf **🙈 Ausblenden** oder mit **Strg + Umschalt + P** verstecken (im Omarchy-Panel die Taste **P**). Zum Zeigen dasselbe nochmal. Das bleibt auch nach einem Neustart so gespeichert.
+
+**Fertiges Programm prüfen:** `klassenzimmer --selbsttest` startet ohne Fenster und meldet, ob der Internet-Weg und eine Erweiterung funktionieren.
+
 ---
 
 ## Für Entwickler

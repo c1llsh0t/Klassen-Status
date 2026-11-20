@@ -270,6 +270,24 @@ Panel {
                 font.pixelSize: Style.font.display
               }
             }
+            // Geheim: 3x schnell auf den Namen -> Extras aus-/einblenden (nur Plus).
+            // Keine Beschriftung, damit der Coach es nicht bemerkt. Lässt den
+            // Status-Knopf rechts frei.
+            MouseArea {
+              anchors.left: hero.left
+              anchors.top: hero.top
+              anchors.bottom: hero.bottom
+              anchors.right: hero.right
+              anchors.rightMargin: Style.space(72)
+              acceptedButtons: Qt.LeftButton
+              property int klicks: 0
+              Timer { id: nameKlick; interval: 600; onTriggered: parent.klicks = 0 }
+              onClicked: {
+                klicks += 1
+                nameKlick.restart()
+                if (klicks >= 3) { klicks = 0; if (root.live) root.run(["--erweiterung-umschalten"]) }
+              }
+            }
             trailingControl: Component {
               Button {
                 visible: root.live
@@ -308,13 +326,6 @@ Panel {
                   bordered: true
                   onClicked: root.run(["--erweiterung", modelData.id])
                 }
-              }
-              Button {
-                text: "🙈 Ausblenden"
-                foreground: root.dim
-                bordered: true
-                tooltipText: "Extras verstecken (zum Zeigen: wieder einblenden im Fenster oder Strg+Umschalt+P)"
-                onClicked: root.run(["--erweiterung-umschalten"])
               }
             }
           }
@@ -404,7 +415,7 @@ Panel {
                     font.pixelSize: Style.font.caption
                   }
                   PanelActionButton {
-                    visible: modelData.status === "offline"
+                    visible: modelData.status === "offline" && root.isCoach   // nur der Coach darf entfernen
                     anchors.verticalCenter: parent.verticalCenter
                     iconText: root.removeArmed === modelData.id ? "󰗠" : "󰅖"
                     foreground: root.removeArmed === modelData.id ? root.urgent : root.dim

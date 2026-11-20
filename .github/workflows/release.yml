@@ -71,6 +71,19 @@ jobs:
           mkdir out
           ditto -c -k --keepParent dist/Klassenzimmer.app "out/${{ matrix.file }}"
 
+      # Prüfen, dass das fertige Programm wirklich startet und der Internet-Weg geht.
+      - name: Selbsttest des fertigen Programms
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            Windows) EXE="dist/Klassenzimmer.exe" ;;
+            macOS)   EXE="dist/Klassenzimmer.app/Contents/MacOS/Klassenzimmer" ;;
+            *)       EXE="dist/Klassenzimmer" ;;
+          esac
+          "$EXE" --selbsttest bericht.txt || true   # Bericht auch ohne Konsole (Windows)
+          echo "--- Selbsttest ---"; cat bericht.txt
+          grep -q "Ergebnis: OK" bericht.txt
+
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.file }}

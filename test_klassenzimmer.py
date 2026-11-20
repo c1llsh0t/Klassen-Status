@@ -667,6 +667,47 @@ class ExtensionTest(unittest.TestCase):
         self.assertIsNone(K.load_extension(FakeApp(), FakeNet(), broken))
         self.assertIsNone(K.load_extension(FakeApp(), FakeNet(), tmp / "gibtsnicht.py"))
 
+    def test_erweiterung_ausblenden_bleibt_gespeichert(self):
+        # ext_visible() steuert Fenster, Mini-Menü und zustand.json. Versteckt wird
+        # gespeichert (store), damit der Coach die Knöpfe auch nach Neustart nicht sieht.
+        store = {}
+
+        class FakeStore:
+            def get(self, k, default=None):
+                return store.get(k, default)
+
+            def set(self, k, v):
+                store[k] = v
+
+        class FakeApp:
+            store = FakeStore()
+            ext_buttons = [("a", "Knopf A", lambda: None)]
+            ext_info = ["Zeile"]
+            ext_hidden = bool(store.get("erweiterung_versteckt"))
+
+            def _render_ext(self):
+                pass
+
+            def _update_small_views(self):
+                pass
+
+            ext_visible = K.App.ext_visible
+            ext_toggle_hidden = K.App.ext_toggle_hidden
+
+        app = FakeApp()
+        self.assertTrue(app.ext_visible())
+        app.ext_toggle_hidden()                        # Coach fragt -> wegklicken
+        self.assertFalse(app.ext_visible())
+        self.assertTrue(store["erweiterung_versteckt"])   # bleibt nach Neustart versteckt
+        app.ext_toggle_hidden()
+        self.assertTrue(app.ext_visible())
+        self.assertFalse(store["erweiterung_versteckt"])
+
+    def test_selbsttest_ohne_internet(self):
+        with mock.patch.dict(os.environ, {"KLASSENZIMMER_INTERNET": "aus"}):
+            with mock.patch.object(K, "extension_path", return_value=Path("/gibtsnicht.py")):
+                self.assertEqual(K.self_test(), 1)     # kein Internet -> FEHLER-Code
+
 
 # ---------------------------------------------------------------------------
 # Speicher und Autostart (in einem Test-Ordner, ändert nichts Echtes)
@@ -791,6 +832,7 @@ class WaybarAndControlTest(unittest.TestCase):
     def test_steuerbefehle_mit_text(self):
         P = K.parse_control
         self.assertEqual(P("toggle\n"), ("toggle", None))
+        self.assertEqual(P("erweiterung-umschalten"), ("erweiterung-umschalten", None))
         self.assertEqual(P("hilfe Aufgabe 3 geht nicht"), ("hilfe", "Aufgabe 3 geht nicht"))
         self.assertEqual(P("hilfe"), ("hilfe", ""))             # Hilfe ohne Text
         self.assertEqual(P("erledigt abc123"), ("erledigt", "abc123"))

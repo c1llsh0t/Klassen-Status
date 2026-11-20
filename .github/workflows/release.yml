@@ -108,6 +108,7 @@ jobs:
         with:
           # Bei einem Tag dessen Namen nehmen, sonst automatisch v1.0.<Nummer>
           tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v1.0.{0}', github.run_number) }}
+          name: ${{ startsWith(github.ref, 'refs/tags/') && 'First Final Version' || format('v1.0.{0}', github.run_number) }}
           target_commitish: ${{ github.sha }}
           make_latest: true
           files: out/*

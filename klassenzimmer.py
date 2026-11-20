@@ -74,7 +74,7 @@ except ImportError:
         sys.exit(1)
     raise
 
-APP_VERSION = "2.6"
+APP_VERSION = "3.0.0"
 
 
 # ===========================================================================
@@ -119,6 +119,7 @@ STATUSES = ("online", "busy")  # online = grün, busy = gelb ("nicht stören")
 MAX_NAME = 30
 MAX_CLASS = 20
 MAX_TEXT = 300
+HILFE_SPERRE = 60      # Anti-Spam: höchstens 1 Hilferuf pro Minute und Person
 
 # Beitrittscode: 6 Zeichen ohne Verwechslungsgefahr (kein 0/O, 1/I/L)
 CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
@@ -1529,7 +1530,8 @@ class SystemTray:
         if app.extension:                                # Extras verstecken/zeigen
             entries.append(item("Extras verstecken" if app.ext_visible() else "Extras zeigen",
                                 call(app.ext_toggle_hidden)))
-        entries += [pystray.Menu.SEPARATOR, item("Beenden", call(app.quit))]
+        entries += [pystray.Menu.SEPARATOR, item("Gruppe verlassen", call(app.leave_group)),
+                    item("Beenden", call(app.quit))]
         return pystray.Menu(*entries)
 
     def update(self, status, open_requests, my_request_state):
@@ -1615,6 +1617,7 @@ class MiniBar:
                 for button_id, text, fn in app.ext_buttons:
                     menu.add_command(label=text, command=lambda f=fn: app.ext_call(f))
             menu.add_separator()
+            menu.add_command(label="Gruppe verlassen", command=app.leave_group)
             menu.add_command(label="Beenden", command=app.quit)
         menu.configure(postcommand=fill_menu)
         for widget in (w, inner, grip, self.dot, name, self.action):
@@ -1763,6 +1766,10 @@ class App:
             self._build_student(bottom)
         else:
             self._build_coach(bottom)
+        # Gruppe verlassen – für alle, App bleibt an und zeigt das Startfenster
+        ttk.Separator(bottom).pack(fill="x", pady=(10, 6))
+        ColorButton(bottom, "⇆  Gruppe verlassen", self.leave_group, bg=BG, fg=MUTED,
+                    hover=HOVER, font=ui_font(10)).pack(anchor="w")
         self._render_peers()
 
     # ---- Erweiterung (TEIL 8) ---------------------------------------------------
@@ -1884,11 +1891,21 @@ class App:
                 self.show_window()
             self._update_small_views()
             return
+        # Anti-Spam: pro Minute nur ein Hilferuf (die automatische Wiederholung
+        # eines noch offenen Rufs läuft woanders und ist davon nicht betroffen).
+        wartezeit = HILFE_SPERRE - (time.time() - getattr(self, "last_help_sent", 0))
+        if wartezeit > 0:
+            self._show_request_info("Schon gefragt – bitte noch %d Sek warten." % int(wartezeit))
+            if text is not None and show:
+                self.show_window()
+            self._update_small_views()
+            return
         self.request_info = ""
         if text is None:
             text = self.help_text.get().strip()
             self.help_text.delete(0, "end")
         text = text[:MAX_TEXT]
+        self.last_help_sent = time.time()
         self.requests.clear()          # nur die neueste Anfrage anzeigen
         for c in coaches:              # jedem Coach einzeln, jeder bestätigt selbst
             help_id = self.net.send_help(c["ip"], c["port"], text, c.get("peer_id"))
@@ -1923,6 +1940,32 @@ class App:
         self.root.clipboard_append(format_code(self.code))
         self.class_label.configure(text="Code kopiert ✓")
         self.root.after(1500, self._update_class_label)
+
+    def leave_group(self, ask=True):
+        """Die Gruppe verlassen, ohne die App zu schliessen: Sie startet neu und
+        zeigt das Startfenster (neuer Code / neue Rolle). Geht für alle."""
+        if ask and not messagebox.askyesno(
+                "Gruppe verlassen",
+                "Diese Gruppe verlassen und das Startfenster öffnen?\n"
+                "Die App bleibt an, du kannst gleich eine neue Gruppe wählen.",
+                parent=self.root):
+            return
+        self.net.stop()
+        if self.control:
+            self.control.close()          # Steuer-Port freigeben, damit die neue Instanz ihn kriegt
+            self.control = None
+        if self.tray:
+            self.tray.stop()
+        try:
+            kwargs = {}
+            if SYSTEM == "Windows":
+                kwargs["creationflags"] = 0x00000208   # NEW_PROCESS_GROUP | DETACHED_PROCESS
+            else:
+                kwargs["start_new_session"] = True
+            subprocess.Popen(base_command(), **kwargs)   # ohne --autostart -> Startfenster
+        except OSError as e:
+            print("Neustart fehlgeschlagen: %s" % e)
+        self.root.destroy()
 
     def quit(self):
         if self.view == "waybar":

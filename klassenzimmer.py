@@ -74,7 +74,7 @@ except ImportError:
         sys.exit(1)
     raise
 
-APP_VERSION = "3.0.1"
+APP_VERSION = "3.0.2"
 
 
 # ===========================================================================
@@ -2337,7 +2337,10 @@ def notify(title, text, urgent=False, root=None):
     tk.Label(inner, text=text, bg=bg, fg="white", justify="left", wraplength=320,
              font=ui_font(10)).pack(anchor="w")
     w.update_idletasks()
-    w.geometry("+%d+%d" % (w.winfo_screenwidth() - w.winfo_reqwidth() - 30, 80))
+    x = w.winfo_screenwidth() - w.winfo_reqwidth() - 30
+    # Windows: unten rechts (wie die Windows-Meldungen), sonst oben rechts
+    y = w.winfo_screenheight() - w.winfo_reqheight() - 60 if SYSTEM == "Windows" else 80
+    w.geometry("+%d+%d" % (x, y))
     for widget in (w, inner):
         widget.bind("<Button-1>", lambda e: w.destroy())
     w.after(12000, w.destroy)

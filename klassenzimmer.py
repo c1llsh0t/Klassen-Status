@@ -74,7 +74,7 @@ except ImportError:
         sys.exit(1)
     raise
 
-APP_VERSION = "2.4"
+APP_VERSION = "2.5"
 
 
 # ===========================================================================
@@ -1591,8 +1591,11 @@ class App:
         top.pack(fill="x")
         info = tk.Frame(top, bg=BG)
         info.pack(side="left")
-        tk.Label(info, text="%s (%s)" % (self.me["name"], ROLE_TEXT[self.me["role"]]),
-                 font=("TkDefaultFont", 12, "bold"), bg=BG).pack(anchor="w")
+        name_label = tk.Label(info, text="%s (%s)" % (self.me["name"], ROLE_TEXT[self.me["role"]]),
+                              font=("TkDefaultFont", 12, "bold"), bg=BG)
+        name_label.pack(anchor="w")
+        # Geheim: 3x schnell auf den Namen -> Erweiterung aus-/einblenden (wie im Panel)
+        name_label.bind("<Triple-Button-1>", lambda e: self.ext_toggle_hidden())
         self.class_label = tk.Label(info, text="", fg="#777", bg=BG, cursor="hand2")
         self.class_label.pack(anchor="w")
         self.class_label.bind("<Button-1>", lambda e: self.copy_code())
@@ -1683,8 +1686,9 @@ class App:
                      wraplength=380).pack(fill="x")
         row = tk.Frame(self.ext_frame, bg=BG)
         row.pack(fill="x", pady=(4, 0))
+        # Verstecken geht geheim: 3x auf den Namen klicken oder Strg+Umschalt+P
+        # (kein sichtbarer Knopf, damit der Coach nichts bemerkt).
         buttons = [(text, lambda f=fn: self.ext_call(f)) for _, text, fn in self.ext_buttons]
-        buttons.append(("🙈 Ausblenden", self.ext_toggle_hidden))
         for i, (text, fn) in enumerate(buttons):
             ColorButton(row, text, fn, bg="#eeeeee", hover="#e0e0e0",
                         padx=8, pady=3).grid(row=i // 3, column=i % 3, sticky="we", padx=2, pady=2)

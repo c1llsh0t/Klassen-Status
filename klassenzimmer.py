@@ -74,7 +74,7 @@ except ImportError:
         sys.exit(1)
     raise
 
-APP_VERSION = "2.4"
+APP_VERSION = "2.6"
 
 
 # ===========================================================================
@@ -1415,7 +1415,18 @@ COLORS = {"online": "#2e9e44", "busy": "#e0b000", "offline": "#9a9a9a"}
 STATUS_TEXT = {"online": "Online", "busy": "Nicht stören", "offline": "Offline"}
 ROLE_TEXT = {"student": "Schüler/in", "coach": "Coach"}
 BG = "white"
-ORANGE, ORANGE_DARK = "#ff9f1a", "#e88a00"
+INK = "#1c2430"          # Schriftfarbe, nicht hartes Schwarz
+MUTED = "#6b7280"        # graue Nebentexte
+LINE = "#e6e8ec"         # feine Trennlinien
+HOVER = "#f0f1f4"        # Knopf unter der Maus
+ORANGE, ORANGE_DARK = "#f76b15", "#e05e0c"
+ACCENT, ACCENT_DARK = "#2563eb", "#1d4ed8"   # Blau für den Hauptknopf
+
+
+def ui_font(size=10, bold=False):
+    """Schöne Schrift je nach System (Windows: Segoe UI, Mac: SF, Linux: Standard)."""
+    fam = {"Windows": "Segoe UI", "Darwin": "SF Pro Text"}.get(SYSTEM, "TkDefaultFont")
+    return (fam, size, "bold") if bold else (fam, size)
 
 
 class ColorButton(tk.Label):
@@ -1440,6 +1451,112 @@ def dot(parent, color, size=14):
     c = tk.Canvas(parent, width=size, height=size, highlightthickness=0, bg=parent["bg"])
     c.create_oval(2, 2, size - 2, size - 2, fill=color, outline="")
     return c
+
+
+class SystemTray:
+    """Symbol in der Taskleiste (Windows) bzw. im Infobereich – wie die anderen
+    Programme, statt eines schwebenden Balkens. Braucht die Pakete pystray und
+    Pillow; die sind im fertigen Programm eingebaut. Fehlen sie (z.B. beim Start
+    aus dem Quelltext), gibt try_create() None zurück und es bleibt beim MiniBar.
+
+    Ein farbiger Punkt zeigt den Status, beim Coach eine Zahl offener Fragen.
+    Linksklick öffnet das Fenster, Rechtsklick zeigt das Menü. pystray läuft in
+    einem eigenen Thread; Aktionen gehen über root.after() zurück in den
+    tkinter-Hauptthread (goldene Regel, siehe TEIL 6)."""
+
+    @classmethod
+    def try_create(cls, app):
+        # Auf dem Mac müsste pystray den Hauptthread haben – das kollidiert mit
+        # tkinter. Darum Tray nur unter Windows (und Linux ohne Panel notfalls).
+        if SYSTEM == "Darwin":
+            return None
+        import importlib.util
+        if not all(importlib.util.find_spec(m) for m in ("pystray", "PIL")):
+            return None
+        try:
+            return cls(app)
+        except Exception as e:
+            print("Taskleisten-Symbol nicht möglich (%s), nehme den kleinen Balken" % e)
+            return None
+
+    def __init__(self, app):
+        import pystray
+        self.app = app
+        self.pystray = pystray
+        self._status = "online"
+        self._badge = 0
+        self.icon = pystray.Icon("klassenzimmer", self._image("online", 0),
+                                 "Klassenzimmer", menu=self._menu())
+        # run_detached: eigener Thread, Haupt-Thread bleibt für tkinter frei
+        self.icon.run_detached()
+
+    # ---- Bild: farbiger Kreis, beim Coach mit Zahl ----------------------------
+    def _image(self, status, badge):
+        from PIL import Image, ImageDraw, ImageFont
+        size = 64
+        img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        col = {"online": (46, 158, 68), "busy": (224, 176, 0), "offline": (154, 154, 154)}[status]
+        if self.app.me["role"] == "coach" and badge:
+            col = (247, 107, 21)                         # orange: offene Fragen
+        d.ellipse((6, 6, size - 6, size - 6), fill=col)
+        if self.app.me["role"] == "coach" and badge:
+            text = str(badge if badge < 10 else "9+")
+            try:
+                font = ImageFont.truetype("segoeui.ttf", 34)
+            except Exception:
+                font = ImageFont.load_default()
+            box = d.textbbox((0, 0), text, font=font)
+            d.text(((size - (box[2] - box[0])) / 2 - box[0], (size - (box[3] - box[1])) / 2 - box[1]),
+                   text, fill="white", font=font)
+        return img
+
+    def _menu(self):
+        pystray, app = self.pystray, self.app
+        item = pystray.MenuItem
+
+        def call(fn):
+            return lambda icon, it=None: app.root.after(0, fn)
+
+        entries = [item("Fenster öffnen", call(app.show_window), default=True),
+                   item("Status wechseln", call(app.toggle_status))]
+        if app.me["role"] == "student":
+            entries.append(item("Coach um Hilfe fragen", call(lambda: app.ask_for_help(""))))
+        if app.ext_visible():
+            entries.append(pystray.Menu.SEPARATOR)
+            for button_id, text, fn in app.ext_buttons:
+                entries.append(item(text, call(lambda f=fn: app.ext_call(f))))
+        if app.extension:                                # Extras verstecken/zeigen
+            entries.append(item("Extras verstecken" if app.ext_visible() else "Extras zeigen",
+                                call(app.ext_toggle_hidden)))
+        entries += [pystray.Menu.SEPARATOR, item("Beenden", call(app.quit))]
+        return pystray.Menu(*entries)
+
+    def update(self, status, open_requests, my_request_state):
+        if (status, open_requests) != (self._status, self._badge):
+            self._status, self._badge = status, open_requests
+            try:
+                self.icon.icon = self._image(status, open_requests)
+            except Exception:
+                pass
+        try:
+            self.icon.menu = self._menu()                # Extras/Rolle können sich ändern
+            self.icon.update_menu()
+        except Exception:
+            pass
+
+    def flash(self):
+        """Kurze Sprechblase, wenn eine Hilfeanfrage kommt."""
+        try:
+            self.icon.notify("Neue Hilfeanfrage", "Klassenzimmer")
+        except Exception:
+            pass
+
+    def stop(self):
+        try:
+            self.icon.stop()
+        except Exception:
+            pass
 
 
 class MiniBar:
@@ -1471,9 +1588,11 @@ class MiniBar:
         self.dot.pack(side="left", padx=(2, 4))
         self.dot.bind("<Button-1>", lambda e: app.toggle_status())
 
-        name = tk.Label(inner, text=app.me["name"][:14], bg=BG, cursor="hand2")
+        name = tk.Label(inner, text=app.me["name"][:14], bg=BG, fg=INK, font=ui_font(10, True),
+                        cursor="hand2")
         name.pack(side="left", padx=(0, 6))
         name.bind("<Button-1>", lambda e: app.show_window())
+        name.bind("<Triple-Button-1>", lambda e: app.ext_toggle_hidden())   # Extras verstecken
 
         if app.me["role"] == "student":
             self.action = ColorButton(inner, "✋", lambda: app.ask_for_help(""), bg=ORANGE,
@@ -1577,7 +1696,13 @@ class App:
         root.protocol("WM_DELETE_WINDOW", self.close_window)
         root.bind_all("<Control-P>", lambda e: self.ext_toggle_hidden())     # Strg+Umschalt+P
 
-        self.mini = MiniBar(self) if view == "mini" else None
+        # "mini": unter Windows am liebsten ein Symbol in der Taskleiste (Tray),
+        # wie die anderen Programme. Klappt das nicht, der kleine schwebende Balken.
+        self.tray = self.mini = None
+        if view == "mini":
+            self.tray = SystemTray.try_create(self)
+            if not self.tray:
+                self.mini = MiniBar(self)
         if start_hidden and view != "fenster":
             self.hide_window()
 
@@ -1591,9 +1716,12 @@ class App:
         top.pack(fill="x")
         info = tk.Frame(top, bg=BG)
         info.pack(side="left")
-        tk.Label(info, text="%s (%s)" % (self.me["name"], ROLE_TEXT[self.me["role"]]),
-                 font=("TkDefaultFont", 12, "bold"), bg=BG).pack(anchor="w")
-        self.class_label = tk.Label(info, text="", fg="#777", bg=BG, cursor="hand2")
+        name_label = tk.Label(info, text="%s (%s)" % (self.me["name"], ROLE_TEXT[self.me["role"]]),
+                              font=ui_font(13, True), fg=INK, bg=BG)
+        name_label.pack(anchor="w")
+        # Geheim: 3x schnell auf den Namen -> Erweiterung aus-/einblenden (wie im Panel)
+        name_label.bind("<Triple-Button-1>", lambda e: self.ext_toggle_hidden())
+        self.class_label = tk.Label(info, text="", fg=MUTED, bg=BG, font=ui_font(9), cursor="hand2")
         self.class_label.pack(anchor="w")
         self.class_label.bind("<Button-1>", lambda e: self.copy_code())
         self._update_class_label()
@@ -1609,7 +1737,7 @@ class App:
 
         ttk.Separator(self.root).pack(fill="x")
         tk.Label(self.root, text="Teilnehmer", bg=BG, anchor="w",
-                 font=("TkDefaultFont", 10, "bold"), padx=12, pady=6).pack(fill="x")
+                 font=ui_font(10, True), fg=INK, padx=12, pady=6).pack(fill="x")
 
         # Liste mit Scrollbalken (für grosse Klassen)
         holder = tk.Frame(self.root, bg=BG)
@@ -1683,8 +1811,9 @@ class App:
                      wraplength=380).pack(fill="x")
         row = tk.Frame(self.ext_frame, bg=BG)
         row.pack(fill="x", pady=(4, 0))
+        # Verstecken geht geheim: 3x auf den Namen klicken oder Strg+Umschalt+P
+        # (kein sichtbarer Knopf, damit der Coach nichts bemerkt).
         buttons = [(text, lambda f=fn: self.ext_call(f)) for _, text, fn in self.ext_buttons]
-        buttons.append(("🙈 Ausblenden", self.ext_toggle_hidden))
         for i, (text, fn) in enumerate(buttons):
             ColorButton(row, text, fn, bg="#eeeeee", hover="#e0e0e0",
                         padx=8, pady=3).grid(row=i // 3, column=i % 3, sticky="we", padx=2, pady=2)
@@ -1697,14 +1826,14 @@ class App:
         self.help_text = tk.Entry(parent)
         self.help_text.pack(fill="x", pady=(2, 6))
         self.help_text.bind("<Return>", lambda e: self.ask_for_help())
-        ColorButton(parent, "Coach um Hilfe fragen", self.ask_for_help, bg=ORANGE,
-                    hover=ORANGE_DARK, font=("TkDefaultFont", 11, "bold"), pady=7).pack(fill="x")
+        ColorButton(parent, "✋  Coach um Hilfe fragen", self.ask_for_help, bg=ACCENT,
+                    hover=ACCENT_DARK, font=ui_font(11, True), pady=8).pack(fill="x")
         self.request_frame = tk.Frame(parent, bg=BG, pady=6)
         self.request_frame.pack(fill="x")
 
     def _build_coach(self, parent):
         tk.Label(parent, text="Hilfeanfragen (älteste zuerst)", bg=BG, anchor="w",
-                 font=("TkDefaultFont", 10, "bold")).pack(fill="x")
+                 font=ui_font(10, True), fg=INK).pack(fill="x")
         self.queue_frame = tk.Frame(parent, bg=BG, pady=4)
         self.queue_frame.pack(fill="x")
         self._render_queue()
@@ -1777,7 +1906,9 @@ class App:
         self._update_small_views()
 
     def remove_peer(self, peer_id, ask=True):
-        """Jemanden aus der gespeicherten Klassenliste entfernen."""
+        """Jemanden aus der gespeicherten Klassenliste entfernen. Nur der Coach darf das."""
+        if self.me["role"] != "coach":
+            return
         p = self.peers.get(peer_id)
         if p and (not ask or messagebox.askyesno("Entfernen", "%s aus der Klassenliste entfernen?" % p["name"],
                                                  parent=self.root)):
@@ -1804,6 +1935,8 @@ class App:
         self.net.stop()
         if self.control:
             self.control.close()
+        if self.tray:
+            self.tray.stop()
         self.root.destroy()
 
     # ---- Ereignisse verarbeiten (Hauptthread!) -----------------------------
@@ -1882,10 +2015,23 @@ class App:
             if q["peer_id"] == item["peer_id"]:
                 q.update(help_id=item["help_id"], text=item["text"] or q["text"],
                          ip=item["ip"], port=item["port"])
+                self._help_popup(item, again=True)
                 return
         item["time"] = time.strftime("%H:%M")
         self.queue.append(item)       # hinten anhängen = älteste vorne
         self.root.bell()
+        self._help_popup(item)
+
+    def _help_popup(self, item, again=False):
+        """Coach: sichtbare Meldung auf dem Bildschirm, wenn eine Hilfeanfrage
+        kommt (nicht nur der Ton und die Warteschlange)."""
+        titel = "✋ %s braucht Hilfe" % item["name"]
+        text = item["text"] or "ohne Text"
+        if again:
+            text = "(nochmal) " + text
+        notify(titel, text, urgent=True, root=self.root)
+        if self.tray:
+            self.tray.flash()
 
     def _tick(self):
         self._render_peers()
@@ -1932,6 +2078,8 @@ class App:
         req = self._my_request_state()
         if self.mini:
             self.mini.update(status, len(self.queue), req)
+        if self.tray:
+            self.tray.update(status, len(self.queue), req)
         # Waybar-Text: farbiger Punkt + Glocke (Coach) bzw. Hand (Schüler)
         text = "<span color='%s'>●</span>" % COLORS[status]
         tip = ["Klassenzimmer: %s" % STATUS_TEXT[status]]
@@ -1994,7 +2142,7 @@ class App:
                 hint += "\nStimmt der Code? Haben alle Version %s?" % APP_VERSION
                 if self.internet is False:
                     hint += "\nInternet-Weg: keine Verbindung (nur WLAN)"
-            tk.Label(self.peer_frame, text=hint, fg="#777", bg=BG, justify="left").pack(anchor="w")
+            tk.Label(self.peer_frame, text=hint, fg=MUTED, bg=BG, font=ui_font(10), justify="left").pack(anchor="w")
             return
         for p in sorted(self.peers.values(), key=self._peer_order):
             status = self._shown_status(p)
@@ -2002,18 +2150,18 @@ class App:
             row.pack(fill="x", pady=2)
             dot(row, COLORS[status]).pack(side="left", padx=(0, 8))
             label = p["name"] + ("  (Coach)" if p["role"] == "coach" else "")
-            tk.Label(row, text=label, bg=BG, fg="#999" if status == "offline" else "black").pack(side="left")
-            if status == "offline":
+            tk.Label(row, text=label, bg=BG, font=ui_font(10), fg=MUTED if status == "offline" else INK).pack(side="left")
+            if status == "offline" and self.me["role"] == "coach":   # nur der Coach darf entfernen
                 x = tk.Label(row, text="✕", bg=BG, fg="#bbb", cursor="hand2")
                 x.bind("<Button-1>", lambda e, pid=p["peer_id"]: self.remove_peer(pid))
                 x.pack(side="right", padx=(6, 0))
-            tk.Label(row, text=STATUS_TEXT[status], bg=BG, fg="#777").pack(side="right")
+            tk.Label(row, text=STATUS_TEXT[status], bg=BG, fg=MUTED, font=ui_font(9)).pack(side="right")
 
     def _render_queue(self):
         for w in self.queue_frame.winfo_children():
             w.destroy()
         if not self.queue:
-            tk.Label(self.queue_frame, text="Keine offenen Anfragen.", fg="#777", bg=BG).pack(anchor="w")
+            tk.Label(self.queue_frame, text="Keine offenen Anfragen.", fg=MUTED, bg=BG, font=ui_font(10)).pack(anchor="w")
             return
         for i, item in enumerate(self.queue, start=1):
             row = tk.Frame(self.queue_frame, bg="#fff4e0", padx=6, pady=4)
@@ -2105,14 +2253,19 @@ def notify(title, text, urgent=False, root=None):
         pass
     if root is None:
         return
-    w = tk.Toplevel(root, bg=ORANGE if urgent else "#333", padx=14, pady=10)
+    bg = ORANGE if urgent else "#222b38"
+    w = tk.Toplevel(root, bg=bg)
     w.overrideredirect(True)
     w.attributes("-topmost", True)
-    tk.Label(w, text=title, bg=w["bg"], fg="white", font=("TkDefaultFont", 11, "bold")).pack(anchor="w")
-    tk.Label(w, text=text, bg=w["bg"], fg="white", justify="left", wraplength=320).pack(anchor="w")
+    inner = tk.Frame(w, bg=bg, padx=16, pady=12)
+    inner.pack(padx=2, pady=2)
+    tk.Label(inner, text=title, bg=bg, fg="white", font=ui_font(11, True)).pack(anchor="w")
+    tk.Label(inner, text=text, bg=bg, fg="white", justify="left", wraplength=320,
+             font=ui_font(10)).pack(anchor="w")
     w.update_idletasks()
     w.geometry("+%d+%d" % (w.winfo_screenwidth() - w.winfo_reqwidth() - 30, 80))
-    w.bind("<Button-1>", lambda e: w.destroy())
+    for widget in (w, inner):
+        widget.bind("<Button-1>", lambda e: w.destroy())
     w.after(12000, w.destroy)
 
 

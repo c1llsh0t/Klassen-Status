@@ -48,15 +48,22 @@ jobs:
         with: { python-version: '3.12' }
       - run: pip install pyinstaller
 
+      # Windows: pystray + Pillow fürs Taskleisten-Symbol (nur dort gebraucht)
+      - name: Taskleisten-Pakete (Windows)
+        if: runner.os == 'Windows'
+        run: pip install pystray pillow
+
       - name: Windows / Linux bauen
         if: runner.os != 'macOS'
         shell: bash
         run: |
-          pyinstaller --onefile --windowed --name Klassenzimmer klassenzimmer.py
           mkdir out
           if [ "$RUNNER_OS" = "Windows" ]; then
+            pyinstaller --onefile --windowed --name Klassenzimmer \
+              --hidden-import pystray._win32 --collect-submodules pystray klassenzimmer.py
             cp dist/Klassenzimmer.exe "out/${{ matrix.file }}"
           else
+            pyinstaller --onefile --windowed --name Klassenzimmer klassenzimmer.py
             cp dist/Klassenzimmer "out/${{ matrix.file }}"
           fi
 
@@ -117,7 +124,7 @@ jobs:
             curl -fsSL https://raw.githubusercontent.com/c1llsh0t/Klassen-Status/main/install-linux.sh | bash
             ```
 
-            **Windows:** `Klassenzimmer-Windows.exe` unten herunterladen, in einen festen Ordner legen und starten. *Weitere Informationen → Trotzdem ausführen*, bei der Firewall *Private Netzwerke → Zulassen*.
+            **Windows:** `Klassenzimmer-Windows.exe` unten herunterladen, in einen festen Ordner legen und starten. *Weitere Informationen → Trotzdem ausführen*, bei der Firewall *Private Netzwerke → Zulassen*. Das Symbol sitzt danach in der Taskleiste (unten rechts, beim ⌃ für ausgeblendete Symbole).
 
             **Mac (Apple-Chip):** `Klassenzimmer-Mac.zip` unten herunterladen, entpacken, App in *Programme* ziehen, öffnen, dann *Systemeinstellungen → Datenschutz & Sicherheit → Dennoch öffnen*. Lokales Netzwerk *Erlauben*.
 

@@ -74,7 +74,7 @@ except ImportError:
         sys.exit(1)
     raise
 
-APP_VERSION = "3.0.0"
+APP_VERSION = "3.0.1"
 
 
 # ===========================================================================
@@ -1486,6 +1486,7 @@ class SystemTray:
         self.pystray = pystray
         self._status = "online"
         self._badge = 0
+        self._alert = ""
         self.icon = pystray.Icon("klassenzimmer", self._image("online", 0),
                                  "Klassenzimmer", menu=self._menu())
         # run_detached: eigener Thread, Haupt-Thread bleibt für tkinter frei
@@ -1534,11 +1535,22 @@ class SystemTray:
                     item("Beenden", call(app.quit))]
         return pystray.Menu(*entries)
 
-    def update(self, status, open_requests, my_request_state):
+    def update(self, status, open_requests, my_request_state, alert=None):
         if (status, open_requests) != (self._status, self._badge):
             self._status, self._badge = status, open_requests
             try:
                 self.icon.icon = self._image(status, open_requests)
+            except Exception:
+                pass
+        # Plus-Alarme als Beschriftung/Sprechblase am Taskleisten-Symbol
+        text = " · ".join(alert) if alert else ""
+        if text != self._alert:
+            neu = text and text != self._alert
+            self._alert = text
+            try:
+                self.icon.title = ("Klassenzimmer – " + text) if text else "Klassenzimmer"
+                if neu:
+                    self.icon.notify(text[:200], "Klassenzimmer")
             except Exception:
                 pass
         try:
@@ -1605,6 +1617,12 @@ class MiniBar:
         self.action.pack(side="left")
         ColorButton(inner, "⤢", app.show_window, bg=BG, fg="#555", hover="#eeeeee",
                     padx=6, pady=1).pack(side="left", padx=(4, 0))
+        # Zeile für Plus-Alarme (Warnung / Kaffi-Anfrage / Countdown); nur sichtbar,
+        # wenn es gerade etwas gibt und die Extras nicht versteckt sind.
+        self.alert = tk.Label(w, bg="#b45309", fg="white", font=ui_font(9, True),
+                              padx=8, pady=1, anchor="w", cursor="hand2")
+        self.alert.bind("<Button-1>", lambda e: app.show_window())
+        self._alert_shown = False
 
         menu = tk.Menu(w, tearoff=0)
 
@@ -1634,7 +1652,7 @@ class MiniBar:
         y = max(0, min(y, w.winfo_screenheight() - 30))
         w.geometry("+%d+%d" % (x, y))
 
-    def update(self, status, open_requests, my_request_state):
+    def update(self, status, open_requests, my_request_state, alert=None):
         self.dot.itemconfigure(self.dot_item, fill=COLORS[status])
         if self.app.me["role"] == "coach":
             if open_requests:
@@ -1646,6 +1664,15 @@ class MiniBar:
         else:
             symbol = {"sending": "…", "acked": "✓", "failed": "✗"}.get(my_request_state, "✋")
             self.action.configure(text=symbol)
+        # Plus-Alarmzeile unter der Leiste ein-/ausblenden
+        if alert:
+            self.alert.configure(text=" · ".join(alert)[:60])
+            if not self._alert_shown:
+                self.alert.pack(fill="x")
+                self._alert_shown = True
+        elif self._alert_shown:
+            self.alert.pack_forget()
+            self._alert_shown = False
 
     def _drag_start(self, e):
         self._off = (e.x_root - self.win.winfo_x(), e.y_root - self.win.winfo_y())
@@ -2119,10 +2146,14 @@ class App:
         """Kleine Leiste und Waybar auf den neuesten Stand bringen."""
         status = self.me["status"]
         req = self._my_request_state()
+        # Plus-Zeilen (Warnung, Kaffi-Anfrage, Pausen-Countdown) auch in der
+        # kleinen Ansicht zeigen – aber nur wenn die Extras sichtbar sind, damit
+        # beim Ausblenden (3x Name) weiterhin nichts davon auftaucht.
+        alert = list(self.ext_info) if (self.ext_visible() and self.ext_info) else []
         if self.mini:
-            self.mini.update(status, len(self.queue), req)
+            self.mini.update(status, len(self.queue), req, alert)
         if self.tray:
-            self.tray.update(status, len(self.queue), req)
+            self.tray.update(status, len(self.queue), req, alert)
         # Waybar-Text: farbiger Punkt + Glocke (Coach) bzw. Hand (Schüler)
         text = "<span color='%s'>●</span>" % COLORS[status]
         tip = ["Klassenzimmer: %s" % STATUS_TEXT[status]]

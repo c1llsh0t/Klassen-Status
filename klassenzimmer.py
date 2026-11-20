@@ -119,6 +119,7 @@ STATUSES = ("online", "busy")  # online = grün, busy = gelb ("nicht stören")
 MAX_NAME = 30
 MAX_CLASS = 20
 MAX_TEXT = 300
+HILFE_SPERRE = 60      # Anti-Spam: höchstens 1 Hilferuf pro Minute und Person
 
 # Beitrittscode: 6 Zeichen ohne Verwechslungsgefahr (kein 0/O, 1/I/L)
 CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
@@ -1890,11 +1891,21 @@ class App:
                 self.show_window()
             self._update_small_views()
             return
+        # Anti-Spam: pro Minute nur ein Hilferuf (die automatische Wiederholung
+        # eines noch offenen Rufs läuft woanders und ist davon nicht betroffen).
+        wartezeit = HILFE_SPERRE - (time.time() - getattr(self, "last_help_sent", 0))
+        if wartezeit > 0:
+            self._show_request_info("Schon gefragt – bitte noch %d Sek warten." % int(wartezeit))
+            if text is not None and show:
+                self.show_window()
+            self._update_small_views()
+            return
         self.request_info = ""
         if text is None:
             text = self.help_text.get().strip()
             self.help_text.delete(0, "end")
         text = text[:MAX_TEXT]
+        self.last_help_sent = time.time()
         self.requests.clear()          # nur die neueste Anfrage anzeigen
         for c in coaches:              # jedem Coach einzeln, jeder bestätigt selbst
             help_id = self.net.send_help(c["ip"], c["port"], text, c.get("peer_id"))
